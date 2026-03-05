@@ -31,14 +31,16 @@ You: agent-pipe run "implement JWT refresh token flow"
   Human -> Claude (answers)
   Claude -> done
 
-You wake up to a reviewed PR.
+You come back to a reviewed implementation.
 ```
 
-Each agent:
+In `auto` mode (default), each agent:
 - Reads and writes files in the repo directly
 - Runs commands (tests, linters, builds)
 - Commits code if needed
 - Only outputs a small JSON contract at the end to say "what should happen next"
+
+In `print` mode, agents produce text-only output (planning, analysis, feedback) without modifying the repo.
 
 ## Design Principles
 
@@ -92,11 +94,7 @@ Create `.agentpipe.json` at repo root:
   "no_progress_hops": 3,
   "lock_file": ".agentpipe.lock",
   "log_dir": ".agentpipe/runs",
-  "agent_timeouts_ms": {
-    "claude": 1800000,
-    "codex": 1800000,
-    "gemini": 1800000
-  },
+  "agent_timeouts_ms": {},
   "adapter_modes": {
     "claude": "auto",
     "codex": "auto",
@@ -112,10 +110,18 @@ All fields are optional. Defaults are applied for anything not specified.
 
 Each agent can run in one of two modes:
 
-| Mode | Behavior | Default commands |
-|------|----------|-----------------|
-| `auto` | Full autonomous agent with file editing, command execution, tool use | Claude: `claude --dangerously-skip-permissions` |
-| `print` | Text-only output, no tool use | Claude: `claude -p` |
+| Mode | Behavior |
+|------|----------|
+| `auto` | Full autonomous agent with file editing, command execution, tool use |
+| `print` | Text-only output, no tool use |
+
+Default commands per mode (only Claude differs between modes):
+
+| Agent | `auto` | `print` |
+|-------|--------|---------|
+| claude | `claude --dangerously-skip-permissions` | `claude -p` |
+| codex | `codex exec --skip-git-repo-check ...` | *(same)* |
+| gemini | `gemini` | *(same)* |
 
 Default mode is `auto` (the whole point is autonomous agents). Set `"print"` per agent when you only want text output:
 
@@ -247,6 +253,6 @@ tests/
 
 ## Why This Is Different From Cursor/IDE Multi-Agent
 
-Cursor and similar IDE tools spin up sub-agents that are LLM calls with tool use — sandboxed within the editor. They can't `git push`, run CI, deploy, or operate autonomously outside the IDE.
+Cursor and similar IDE tools can spin up multiple sub-agents with custom personas and models. But they can't orchestrate powerful standalone agentic coding CLIs like Claude Code, Codex, or Gemini CLI — each of which is a full autonomous system with its own shell access, tool use, and execution environment.
 
-This project chains **full autonomous coding agents** — each with shell access, file editing, test execution, and commit capabilities. They operate independently on the actual repo. The orchestrator is just a pipe.
+This project makes those independent CLI agents work together. Each agent runs as its own process with full autonomy over the repo. The orchestrator is just a pipe between them.

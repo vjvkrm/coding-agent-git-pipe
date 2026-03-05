@@ -193,10 +193,10 @@ function parseContractOutput(outputText: string): unknown
 
 Extracts the JSON contract from agent output text. Supports two formats:
 
-1. **Fenced JSON** (preferred) — last `` ```json ... ``` `` block in the output.
-2. **Raw JSON** — output is a bare `{ ... }` object.
+1. **Fenced JSON** (preferred) — matches `` ```json ... ``` `` anchored to the end of the output. Note: uses lazy matching (`*?`), so with multiple fenced blocks it grabs the first one that reaches the final closing fence — not necessarily the last block. This is a known limitation.
+2. **Raw JSON** — entire trimmed output starts with `{` and ends with `}`.
 
-Throws if no valid JSON block is found. The fenced format must be the final block in the output with no trailing text.
+Throws if neither format is found.
 
 ---
 
