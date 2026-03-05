@@ -1,0 +1,186 @@
+import path from "path";
+import { runOrchestrator } from "./orchestrator";
+import { AgentName } from "./types";
+
+const pkg = require("../package.json") as { version?: string };
+
+function printHelp(): void {
+  console.log("agent-pipe (cagp)");
+  console.log("");
+  console.log('Usage:\n  agent-pipe run "<task>" [options]');
+  console.log("");
+  console.log("Options:");
+  console.log("  --first-agent <name>       First agent (claude|codex|gemini)");
+  console.log("  --max-hops <number>        Maximum routing hops before pause");
+  console.log("  --timeout-ms <number>      Per-agent timeout in milliseconds");
+  console.log("  --max-retries <number>     Contract parse retries (default from config)");
+  console.log("  --no-progress-hops <num>   Ask human if repo doesn't change for N steps");
+  console.log("  --config <path>            Path to config JSON (default: .agentpipe.json)");
+  console.log("  --cwd <path>               Working directory (default: current directory)");
+  console.log("  -h, --help                 Show help");
+  console.log("  -v, --version              Show version");
+}
+
+function parseRunArgs(args: string[]): {
+  taskParts: string[];
+  firstAgent: AgentName | null;
+  maxHops: number | null;
+  timeoutMs: number | null;
+  maxRetries: number | null;
+  noProgressHops: number | null;
+  configPathRaw: string | null;
+  configPath: string | null;
+  cwd: string;
+} {
+  const parsed = {
+    taskParts: [] as string[],
+    firstAgent: null as AgentName | null,
+    maxHops: null as number | null,
+    timeoutMs: null as number | null,
+    maxRetries: null as number | null,
+    noProgressHops: null as number | null,
+    configPathRaw: null as string | null,
+    configPath: null as string | null,
+    cwd: process.cwd(),
+  };
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    const next = args[i + 1];
+
+    if (arg === "--first-agent" && next) {
+      parsed.firstAgent = next as AgentName;
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--max-hops" && next) {
+      parsed.maxHops = Number(next);
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--timeout-ms" && next) {
+      parsed.timeoutMs = Number(next);
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--max-retries" && next) {
+      parsed.maxRetries = Number(next);
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--no-progress-hops" && next) {
+      parsed.noProgressHops = Number(next);
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--config" && next) {
+      parsed.configPathRaw = next;
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--cwd" && next) {
+      parsed.cwd = path.resolve(process.cwd(), next);
+      i += 1;
+      continue;
+    }
+
+    parsed.taskParts.push(arg);
+  }
+
+  if (parsed.configPathRaw) {
+    parsed.configPath = path.resolve(parsed.cwd, parsed.configPathRaw);
+  }
+
+  return parsed;
+}
+
+export async function main(argv = process.argv): Promise<void> {
+  const args = argv.slice(2);
+  const command = args[0];
+
+  if (args.includes("--version") || args.includes("-v")) {
+    console.log(`coding-agent-git-pipe v${pkg.version || "0.0.0"}`);
+    process.exit(0);
+  }
+
+  if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
+    printHelp();
+    process.exit(0);
+  }
+
+  if (command !== "run") {
+    console.error(`Unknown command: ${command}`);
+    printHelp();
+    process.exit(1);
+  }
+
+  const parsed = parseRunArgs(args.slice(1));
+  const task = parsed.taskParts.join(" ").trim();
+  if (!task) {
+    console.error('Missing task string. Example: agent-pipe run "implement JWT refresh flow"');
+    process.exit(1);
+  }
+
+  if (parsed.maxHops !== null && (!Number.isInteger(parsed.maxHops) || parsed.maxHops <= 0)) {
+    console.error("--max-hops must be a positive integer");
+    process.exit(1);
+  }
+
+  if (parsed.timeoutMs !== null && (!Number.isInteger(parsed.timeoutMs) || parsed.timeoutMs <= 0)) {
+    console.error("--timeout-ms must be a positive integer");
+    process.exit(1);
+  }
+
+  if (parsed.maxRetries !== null && (!Number.isInteger(parsed.maxRetries) || parsed.maxRetries < 0)) {
+    console.error("--max-retries must be a non-negative integer");
+    process.exit(1);
+  }
+
+  if (
+    parsed.noProgressHops !== null &&
+    (!Number.isInteger(parsed.noProgressHops) || parsed.noProgressHops < 0)
+  ) {
+    console.error("--no-progress-hops must be a non-negative integer");
+    process.exit(1);
+  }
+
+  if (parsed.firstAgent !== null) {
+    const allowed = new Set<AgentName>(["claude", "codex", "gemini"]);
+    if (!allowed.has(parsed.firstAgent)) {
+      console.error("--first-agent must be one of: claude, codex, gemini");
+      process.exit(1);
+    }
+  }
+
+  const result = await runOrchestrator({
+    task,
+    firstAgent: parsed.firstAgent,
+    maxHops: parsed.maxHops,
+    timeoutMs: parsed.timeoutMs,
+    maxInvalidContractRetries: parsed.maxRetries,
+    noProgressHops: parsed.noProgressHops,
+    configPath: parsed.configPath,
+    cwd: parsed.cwd,
+  });
+
+  if (result && result.status) {
+    console.log(
+      `[agent-pipe] status=${result.status} hops=${result.hops}${
+        result.logPath ? ` log=${result.logPath}` : ""
+      }`
+    );
+  }
+}
+
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(`Fatal error: ${(error as Error).message}`);
+    process.exit(1);
+  });
+}

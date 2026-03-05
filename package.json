@@ -1,0 +1,23 @@
+{
+  "name": "coding-agent-git-pipe",
+  "version": "1.0.0",
+  "description": "A lightweight orchestrator that routes tasks between local AI coding CLIs",
+  "bin": {
+    "cagp": "./bin/cli.js",
+    "agent-pipe": "./bin/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node ./dist/cli.js",
+    "run": "node ./dist/cli.js run",
+    "dev": "tsx ./src/cli.ts",
+    "test": "node --import tsx --test ./tests/**/*.test.ts",
+    "prepare": "npm run build",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
