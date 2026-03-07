@@ -1,6 +1,11 @@
 import { basename } from "node:path";
-import { AdapterInvocation, Config } from "../types";
-import { resolveAdapterCommand, runAdapter, spawnAdapterProcess } from "./base";
+import { AdapterInvocation, Config, InvokeAgentOptions } from "../types";
+import {
+  extractSessionRefFromJsonLines,
+  resolveAdapterCommand,
+  runAdapter,
+  spawnAdapterProcess,
+} from "./base";
 
 const GEMINI_STREAM_ARGS = ["-o", "stream-json"];
 
@@ -118,14 +123,13 @@ export function resolveGeminiStreamingCommand(config: Config): string[] | null {
 
 export function invokeGemini(
   prompt: string,
-  options: {
-    cwd: string;
-    config: Config;
-    timeoutMs: number;
-    onOutput: (chunk: string, stream: "stdout" | "stderr") => void;
-  }
+  options: InvokeAgentOptions
 ): Promise<AdapterInvocation> {
-  const commandParts = resolveGeminiStreamingCommand(options.config);
+  const baseCommandParts = resolveGeminiStreamingCommand(options.config);
+  const commandParts =
+    baseCommandParts && options.sessionRef
+      ? [...baseCommandParts, "--resume", options.sessionRef]
+      : baseCommandParts;
   if (commandParts === null) {
     return runAdapter("gemini", prompt, options);
   }
@@ -248,6 +252,7 @@ export function invokeGemini(
         stderr,
         combined: `${stdout}${stderr}`,
         durationMs: Date.now() - startedAt,
+        sessionRef: extractSessionRefFromJsonLines(rawStdout) || options.sessionRef || null,
       });
     });
   });

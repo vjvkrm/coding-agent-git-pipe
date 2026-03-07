@@ -1,7 +1,7 @@
 export type AgentName = "claude" | "codex" | "gemini";
 export type TargetName = AgentName | "human" | "stop";
-export type NextAction = "plan" | "implement" | "review" | "ask-human" | "done";
-export type StepPromptScope = "first_agent" | "plan" | "implement" | "review";
+export type NextAction = "plan" | "implement" | "review" | "pair" | "ask-human" | "done";
+export type StepPromptScope = "first_agent" | "plan" | "implement" | "review" | "pair";
 
 export interface Question {
   id: string;
@@ -31,6 +31,19 @@ export interface Config {
   step_prompts: Record<StepPromptScope, string[]>;
 }
 
+export interface InvokeAgentOptions {
+  config: Config;
+  cwd: string;
+  timeoutMs: number;
+  onOutput: (chunk: string, stream: "stdout" | "stderr") => void;
+  sessionRef?: string | null;
+}
+
+export interface HumanInputPayload {
+  message?: string;
+  questions?: Question[];
+}
+
 export interface AdapterInvocation {
   agent: AgentName;
   command: string[];
@@ -40,6 +53,7 @@ export interface AdapterInvocation {
   stderr: string;
   combined: string;
   durationMs: number;
+  sessionRef?: string | null;
 }
 
 export interface OrchestratorResult {
@@ -62,14 +76,9 @@ export interface RunInput {
     invokeAgent?: (
       agentName: AgentName,
       prompt: string,
-      options: {
-        config: Config;
-        cwd: string;
-        timeoutMs: number;
-        onOutput: (chunk: string, stream: "stdout" | "stderr") => void;
-      }
+      options: InvokeAgentOptions
     ) => Promise<AdapterInvocation>;
-    askHumanInput?: (payload: { message?: string; questions?: Question[] }) => Promise<string>;
+    askHumanInput?: (payload: HumanInputPayload) => Promise<string>;
     getRepoStateSignature?: (cwd: string) => string | null | Promise<string | null>;
   };
 }

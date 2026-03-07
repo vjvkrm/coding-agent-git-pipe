@@ -68,10 +68,12 @@ The main entry point. Runs the full orchestration loop: invoke agent, parse cont
 **Behavior:**
 1. Loads config from `.agentpipe.json` (or `input.configPath`).
 2. Acquires a lock file to prevent concurrent runs.
-3. Loops: invoke agent -> parse contract -> route to next -> repeat.
-4. Stops when the resolved target is `stop` (default for `done`), `max_hops`, or unrecoverable error.
-5. Logs every event to a JSONL file.
-6. Releases lock on exit (including SIGINT/SIGTERM).
+3. Maintains logical step threads (`first_agent`, `plan`, `implement`, `review`, and `pair:<origin-scope>`) with opaque adapter session refs when available.
+4. Loops: invoke agent -> parse contract -> route to next -> repeat.
+5. On `done -> stop`, opens a finish/continue human gate instead of exiting immediately. `continue` resumes the same agent/session.
+6. Stops on `finish`, `max_hops`, or unrecoverable error.
+7. Logs every event to a JSONL file.
+8. Releases lock on exit (including SIGINT/SIGTERM).
 
 **Runtime injection:** All three core behaviors (agent invocation, human input, repo state) can be overridden via `input.runtime` for testing or custom integrations.
 
@@ -108,9 +110,12 @@ type InvokeAgentFn = (
     cwd: string;
     timeoutMs: number;
     onOutput: (chunk: string, stream: "stdout" | "stderr") => void;
+    sessionRef?: string | null;
   }
 ) => Promise<AdapterInvocation>;
 ```
+
+`sessionRef` is adapter-defined and opaque to the orchestrator. Built-in adapters use it to resume native CLI sessions when the underlying tool supports that.
 
 **`runtime.askHumanInput`** — Replace the default readline-based human gate. Receives a message and optional questions. Must return a string response (empty string stops the run).
 
@@ -156,7 +161,7 @@ interface Contract {
   questions?: Question[];   // Required when next_action = "ask-human"
 }
 
-type NextAction = "plan" | "implement" | "review" | "ask-human" | "done";
+type NextAction = "plan" | "implement" | "review" | "pair" | "ask-human" | "done";
 
 interface Question {
   id: string;
@@ -164,7 +169,11 @@ interface Question {
 }
 ```
 
-**Key design decision:** The `to` field uses action names (`plan`, `implement`, `review`), not agent names (`claude`, `codex`, `gemini`). This keeps agents unaware of each other's identity. The router maps actions to agents via the config.
+**Key design decision:** The `to` field uses action names (`plan`, `implement`, `review`, `pair`), not agent names (`claude`, `codex`, `gemini`). This keeps agents unaware of each other's identity. The router maps actions to agents via the config.
+
+**Pair semantics:** When `next_action` is `"pair"`, the orchestrator saves the current agent as a return target, routes to the configured pair agent, and automatically returns to the invoking agent after one hop — regardless of what the pair agent sets as its own `next_action`.
+
+**Done semantics:** When `done` resolves to `stop`, the orchestrator opens a human finish/continue gate. `finish` ends the run; `continue` or any non-empty follow-up message resumes the same step thread/session that emitted `done`.
 
 ---
 
@@ -178,8 +187,8 @@ Validates a parsed JSON object against the contract schema. Throws on invalid in
 
 **Validation rules:**
 - `contract_version` must be `"1"`.
-- `next_action` must be one of: `plan`, `implement`, `review`, `ask-human`, `done`.
-- `to` (if present) must be one of: `plan`, `implement`, `review`, `ask-human`, `done`.
+- `next_action` must be one of: `plan`, `implement`, `review`, `pair`, `ask-human`, `done`.
+- `to` (if present) must be one of: `plan`, `implement`, `review`, `pair`, `ask-human`, `done`.
 - `message` must be a non-empty string (whitespace is trimmed).
 - `questions` (if present) must be an array of `{ id: string, text: string }`.
 - `questions` cannot be empty when `next_action` is `ask-human`.
@@ -215,8 +224,8 @@ You must end your response with exactly one JSON block and no text after it:
 ```json
 {
   "contract_version": "1",
-  "next_action": "plan | implement | review | ask-human | done",
-  "to": "(optional) plan | implement | review | ask-human | done",
+  "next_action": "plan | implement | review | pair | ask-human | done",
+  "to": "(optional) plan | implement | review | pair | ask-human | done",
   "message": "task/context for next step",
   "questions": [{"id":"q1","text":"Only for ask-human"}]
 }
@@ -263,7 +272,7 @@ interface Config {
   agent_timeouts_ms: Partial<Record<AgentName, number>>;
   adapter_modes: Partial<Record<AgentName, "print" | "auto">>;
   adapters: Partial<Record<AgentName, string[]>>;
-  step_prompts: Record<"first_agent" | "plan" | "implement" | "review", string[]>;
+  step_prompts: Record<"first_agent" | "plan" | "implement" | "review" | "pair", string[]>;
 }
 ```
 
@@ -285,6 +294,7 @@ Loads and validates `.agentpipe.json`. Deep-merges user config over defaults. If
 | `routing.plan` | `"claude"` |
 | `routing.implement` | `"codex"` |
 | `routing.review` | `"gemini"` |
+| `routing.pair` | `"claude"` |
 | `max_hops` | `10` |
 | `first_agent` | `"claude"` |
 | `agent_timeout_ms` | `1800000` (30 min) |
@@ -292,15 +302,16 @@ Loads and validates `.agentpipe.json`. Deep-merges user config over defaults. If
 | `no_progress_hops` | `3` |
 | `adapter_modes` | `{}` (all agents default to `"auto"`) |
 | `adapters` | `{}` (uses mode-based defaults) |
-| `step_prompts` | `{ first_agent: [], plan: [], implement: [], review: [] }` |
+| `step_prompts` | `{ first_agent: [], plan: [], implement: [], review: [], pair: [] }` |
 
 ### `step_prompts`
 
 `step_prompts` lets you inject hidden prompt instructions by orchestration stage:
 
-- `first_agent` applies to the initial stage and persists through human clarification until the run hands off into a routed `plan`, `implement`, or `review` step.
-- `plan`, `implement`, and `review` apply by routed action, not by agent identity.
+- `first_agent` applies to the initial stage and persists through human clarification until the run hands off into a routed `plan`, `implement`, `review`, or `pair` step.
+- `plan`, `implement`, `review`, and `pair` apply by routed action, not by agent identity.
 - These instructions are prepended to the agent prompt and are not printed to the terminal stream.
+- Logical step threads are scoped the same way, so `implement -> review -> implement` resumes the original implement session instead of starting over when the adapter supports session persistence.
 
 Example:
 
@@ -310,7 +321,8 @@ Example:
     "first_agent": ["Analyze first and route intentionally."],
     "plan": ["Planning only. Avoid code edits unless explicitly needed."],
     "implement": ["Focus on concrete repo changes and validation."],
-    "review": ["Review for correctness, regressions, and missing tests."]
+    "review": ["Review for correctness, regressions, and missing tests."],
+    "pair": ["Provide expert advice and suggestions. Do not modify code directly."]
   }
 }
 ```
@@ -407,6 +419,7 @@ interface AdapterInvocation {
   stderr: string;        // Full captured stderr
   combined: string;      // Interleaved stdout + stderr
   durationMs: number;    // Wall-clock execution time
+  sessionRef?: string | null;  // Opaque adapter session token/id for resuming later hops
 }
 ```
 
@@ -562,7 +575,7 @@ type AgentName = "claude" | "codex" | "gemini";
 type TargetName = AgentName | "human" | "stop";
 
 // Actions that appear in contracts (agent-facing)
-type NextAction = "plan" | "implement" | "review" | "ask-human" | "done";
+type NextAction = "plan" | "implement" | "review" | "pair" | "ask-human" | "done";
 
 // Question for human gate
 interface Question {
@@ -590,7 +603,14 @@ Every run produces a JSONL file at `{log_dir}/{run_id}.jsonl`. Each line is a JS
 | `step_failed` | `step_id`, `agent`, `error` | Agent invocation failed entirely |
 | `routing_failed` | `step_id`, `agent`, `contract`, `error` | Router could not resolve target |
 | `human_response` | `step_id`, `reason`, `response` | Human provided input. Reason: `ask-human`, `routed-to-human:<action>` (when a non-ask-human action routes to human), `agent-failure`, `routing-error`, `no-progress` |
+| `thread_session_started` | `step_id`, `agent`, `thread_key`, `session_ref` | A step thread started or ran without a prior saved session |
+| `thread_session_resumed` | `step_id`, `agent`, `thread_key`, `session_ref` | A saved step thread/session was resumed |
 | `no_progress_check` | `step_id`, `no_progress_count` | Repo state compared |
+| `pair_invoked` | `step_id`, `invoking_agent`, `pair_target` | Agent initiated a pair session |
+| `pair_return` | `step_id`, `return_agent` | Pair session ended, returning to invoking agent |
+| `done_gate_opened` | `step_id`, `agent`, `thread_key`, `session_ref` | Agent proposed completion and the finish/continue gate opened |
+| `done_gate_finish` | `step_id`, `agent`, `thread_key` | Human chose `finish` |
+| `done_gate_continue` | `step_id`, `agent`, `thread_key`, `response` | Human continued with a follow-up that resumes the same session |
 | `run_completed` | `status`, `step_id`, `message` | Run finished (`done` or `max-hops`) |
 | `signal` | `signal`, `step_id` | SIGINT/SIGTERM received |
 | `run_finalized` | _(none)_ | Lock released, cleanup done |
@@ -669,4 +689,4 @@ Current test files:
 |------|-------|
 | `tests/contract.test.ts` | Valid contract acceptance, invalid target rejection |
 | `tests/parser.test.ts` | Fenced JSON extraction, raw JSON, missing block |
-| `tests/orchestrator.test.ts` | Full loop (plan->implement->review->done), ask-human pause/resume, retry on invalid contract, max_hops termination, no-progress guard |
+| `tests/orchestrator.test.ts` | Full loop (plan->implement->review->done), ask-human pause/resume, retry on invalid contract, max_hops termination, no-progress guard, pair routing with auto-return |

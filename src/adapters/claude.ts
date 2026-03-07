@@ -1,4 +1,5 @@
-import { AdapterInvocation, Config } from "../types";
+import { randomUUID } from "crypto";
+import { AdapterInvocation, InvokeAgentOptions } from "../types";
 import { resolveAdapterCommand, runAdapter, spawnAdapterProcess } from "./base";
 
 const CLAUDE_STREAM_ARGS = [
@@ -99,19 +100,22 @@ export function normalizeClaudeStreamOutput(output: string): string {
 
 export function invokeClaude(
   prompt: string,
-  options: {
-    cwd: string;
-    config: Config;
-    timeoutMs: number;
-    onOutput: (chunk: string, stream: "stdout" | "stderr") => void;
-  }
+  options: InvokeAgentOptions
 ): Promise<AdapterInvocation> {
   const configured = options.config.adapters?.claude;
   if (Array.isArray(configured) && configured.length > 0) {
     return runAdapter("claude", prompt, options);
   }
 
-  const commandParts = [...resolveAdapterCommand("claude", options.config), ...CLAUDE_STREAM_ARGS];
+  const sessionRef = options.sessionRef || randomUUID();
+  const sessionArgs = options.sessionRef
+    ? ["--resume", options.sessionRef]
+    : ["--session-id", sessionRef];
+  const commandParts = [
+    ...resolveAdapterCommand("claude", options.config),
+    ...sessionArgs,
+    ...CLAUDE_STREAM_ARGS,
+  ];
   const command = commandParts[0];
   const args = [...commandParts.slice(1), prompt];
   const startedAt = Date.now();
@@ -326,6 +330,7 @@ export function invokeClaude(
         stderr,
         combined: `${stdout}${stderr}`,
         durationMs: Date.now() - startedAt,
+        sessionRef,
       });
     });
   });

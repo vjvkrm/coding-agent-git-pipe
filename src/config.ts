@@ -3,13 +3,14 @@ import path from "path";
 import { AgentName, Config, NextAction, StepPromptScope, TargetName } from "./types";
 
 const ALLOWED_TARGETS = new Set<TargetName>(["claude", "codex", "gemini", "human", "stop"]);
-const ALLOWED_ACTIONS = new Set<NextAction>(["plan", "implement", "review", "ask-human", "done"]);
+const ALLOWED_ACTIONS = new Set<NextAction>(["plan", "implement", "review", "pair", "ask-human", "done"]);
 const ALLOWED_AGENTS = new Set<AgentName>(["claude", "codex", "gemini"]);
 const ALLOWED_STEP_PROMPT_SCOPES = new Set<StepPromptScope>([
   "first_agent",
   "plan",
   "implement",
   "review",
+  "pair",
 ]);
 
 export const DEFAULT_CONFIG: Config = {
@@ -17,6 +18,7 @@ export const DEFAULT_CONFIG: Config = {
     plan: "claude",
     implement: "codex",
     review: "gemini",
+    pair: "claude",
     "ask-human": "human",
     done: "stop",
   },
@@ -35,6 +37,7 @@ export const DEFAULT_CONFIG: Config = {
     plan: [],
     implement: [],
     review: [],
+    pair: [],
   },
 };
 
@@ -165,7 +168,7 @@ function validateStepPrompts(config: Config, candidatePath: string): void {
   for (const scope of Object.keys(config.step_prompts)) {
     if (!ALLOWED_STEP_PROMPT_SCOPES.has(scope as StepPromptScope)) {
       throw new Error(
-        `Invalid step_prompts key "${scope}" in ${candidatePath}; expected first_agent,plan,implement,review`
+        `Invalid step_prompts key "${scope}" in ${candidatePath}; expected first_agent,plan,implement,review,pair`
       );
     }
   }

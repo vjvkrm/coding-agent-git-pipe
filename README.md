@@ -2,7 +2,7 @@
 
 A lightweight TypeScript CLI orchestrator that chains autonomous AI coding agents (Claude Code, Codex, Gemini) into automated workflows using a minimal JSON contract.
 
-Each agent thinks it's talking to a human. It's not. It's talking to another agent through this pipe. The agents don't know each other exist — they only see abstract actions (plan, implement, review), never agent names. The orchestrator stays dumb; the agents' autonomy is the feature.
+Each agent thinks it's talking to a human. It's not. It's talking to another agent through this pipe. The agents don't know each other exist — they only see abstract actions (plan, implement, review, pair), never agent names. The orchestrator stays dumb; the agents' autonomy is the feature.
 
 ## Table of Contents
 
@@ -17,6 +17,7 @@ Each agent thinks it's talking to a human. It's not. It's talking to another age
 - [Configuration](#configuration)
   - [Config Reference](#config-reference)
   - [Step Prompts](#step-prompts)
+  - [Step Threads and Sessions](#step-threads-and-sessions)
   - [Adapter Modes](#adapter-modes)
   - [Custom Agent Commands](#custom-agent-commands)
 - [Contract Schema](#contract-schema)
@@ -58,7 +59,7 @@ You need at least one of the following AI coding CLIs installed and authenticate
 |-------|---------|------|
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `npm install -g @anthropic-ai/claude-code` | `claude` (follow login prompts) |
 | [Codex](https://github.com/openai/codex) | `npm install -g @openai/codex` | Set `OPENAI_API_KEY` env var |
-| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `npm install -g @anthropic-ai/gemini-cli` or see [Gemini CLI docs](https://github.com/google-gemini/gemini-cli) | `gemini` (follow login prompts) |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `npm install -g @google/gemini-cli` or see [Gemini CLI docs](https://github.com/google-gemini/gemini-cli) | `gemini` (follow login prompts) |
 
 You do **not** need all three. See [Using With Fewer Agents](#using-with-fewer-agents) to configure routing for your setup.
 
@@ -207,6 +208,8 @@ You: cagp run "implement JWT refresh token flow"
 
   Orchestrator -> Claude (plans the approach)
   Claude -> Codex (implements the code, runs tests)
+  Codex -> Claude (pair: asks for architecture advice)
+  Claude -> Codex (returns with suggestions)
   Codex -> Gemini (reviews the diff, runs linters)
   Gemini -> Claude (requests changes)
   Claude -> Human (asks a question)
@@ -238,6 +241,7 @@ Create `.agentpipe.json` at your repo root (optional — all fields have sensibl
     "plan": "claude",
     "implement": "codex",
     "review": "gemini",
+    "pair": "claude",
     "ask-human": "human",
     "done": "stop"
   },
@@ -255,7 +259,8 @@ Create `.agentpipe.json` at your repo root (optional — all fields have sensibl
     "first_agent": [],
     "plan": [],
     "implement": [],
-    "review": []
+    "review": [],
+    "pair": []
   }
 }
 ```
@@ -273,7 +278,7 @@ Add to your `.gitignore`:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `routing` | `Record<action, target>` | plan->claude, implement->codex, review->gemini | Maps actions to agents. Targets: `claude`, `codex`, `gemini`, `human`, `stop` |
+| `routing` | `Record<action, target>` | plan->claude, implement->codex, review->gemini, pair->claude | Maps actions to agents. Targets: `claude`, `codex`, `gemini`, `human`, `stop` |
 | `max_hops` | `number` | `10` | Max routing hops before stopping |
 | `first_agent` | `string` | `"claude"` | Which agent receives the initial task |
 | `agent_timeout_ms` | `number` | `1800000` (30min) | Default per-agent timeout |
@@ -284,14 +289,14 @@ Add to your `.gitignore`:
 | `agent_timeouts_ms` | `Record<agent, number>` | `{}` | Per-agent timeout overrides |
 | `adapter_modes` | `Record<agent, "print"\|"auto">` | `{}` (all default to `auto`) | Per-agent execution mode |
 | `adapters` | `Record<agent, string[]>` | `{}` | Per-agent command override |
-| `step_prompts` | `Record<scope, string[]>` | all empty arrays | Hidden prompt instructions scoped to `first_agent`, `plan`, `implement`, or `review` |
+| `step_prompts` | `Record<scope, string[]>` | all empty arrays | Hidden prompt instructions scoped to `first_agent`, `plan`, `implement`, `review`, or `pair` |
 
 ### Step Prompts
 
 Use `step_prompts` when you want to bias behavior by stage without changing the visible task text.
 
-- `first_agent` applies to the initial stage and survives human clarification until the run hands off into a routed `plan`, `implement`, or `review` step.
-- `plan`, `implement`, and `review` apply based on the routed action for the current hop, not the agent name.
+- `first_agent` applies to the initial stage and survives human clarification until the run hands off into a routed `plan`, `implement`, `review`, or `pair` step.
+- `plan`, `implement`, `review`, and `pair` apply based on the routed action for the current hop, not the agent name.
 - These instructions are injected into the agent prompt invisibly; they do not print to the terminal.
 
 Example:
@@ -302,10 +307,20 @@ Example:
     "first_agent": ["Analyze first. Route intentionally. Do not implement immediately."],
     "plan": ["Planning only. Prefer decomposition and routing over code edits."],
     "implement": ["Focus on concrete repo changes and validation."],
-    "review": ["Review for correctness, regressions, and missing tests."]
+    "review": ["Review for correctness, regressions, and missing tests."],
+    "pair": ["Provide expert advice, suggestions, and approach validation. Do not modify code."]
   }
 }
 ```
+
+### Step Threads and Sessions
+
+`agent-pipe` now keeps a logical thread per step scope instead of treating every hop as a blank one-shot exchange.
+
+- Default thread keys are `first_agent`, `plan`, `implement`, and `review`.
+- Pair hops use a separate thread namespace: `pair:<origin-scope>`. That keeps pair advice sessions separate from the invoking step's own session.
+- Built-in adapters reuse native CLI session ids when available. When a custom adapter cannot resume natively, `agent-pipe` falls back to prompt replay for continuity.
+- When a step resumes, the prompt only includes the new handoff plus turns since that thread last ran. Older context stays in the native CLI session instead of being replayed every time.
 
 ### Adapter Modes
 
@@ -370,8 +385,8 @@ Every agent response must end with a JSON contract. This is how agents tell the 
 ```json
 {
   "contract_version": "1",
-  "next_action": "plan | implement | review | ask-human | done",
-  "to": "(optional) plan | implement | review | ask-human | done",
+  "next_action": "plan | implement | review | pair | ask-human | done",
+  "to": "(optional) plan | implement | review | pair | ask-human | done",
   "message": "task/context for next step",
   "questions": [{ "id": "q1", "text": "Only used when next_action=ask-human" }]
 }
@@ -385,7 +400,29 @@ Every agent response must end with a JSON contract. This is how agents tell the 
 | `message` | Yes | Context passed to the next step |
 | `questions` | Only for `ask-human` | Questions for the human to answer |
 
-**Important:** `to` uses action names (`plan`, `implement`, `review`) — never agent names. The routing config maps actions to agents internally. This keeps agents unaware of each other.
+**Important:** `to` uses action names (`plan`, `implement`, `review`, `pair`) — never agent names. The routing config maps actions to agents internally. This keeps agents unaware of each other.
+
+### Pair Action
+
+The `pair` action enables pair-programming sessions. When an agent emits `next_action: "pair"`, the orchestrator:
+
+1. Saves the current agent as the "return-to" target.
+2. Routes to the configured pair agent (default: `claude`).
+3. The pair agent provides advice, suggestions, or approach validation.
+4. After the pair agent responds, the orchestrator **automatically returns** to the original invoking agent with the pair agent's response as the message.
+
+The return is forced regardless of what the pair agent sets as its own `next_action`. Nested pair calls are not supported — if the pair agent emits `pair`, it is treated as a normal routing action.
+
+### Done Gate
+
+When a contract resolves to `done -> stop`, the run no longer exits immediately.
+
+1. The agent's completion message is shown through the human gate.
+2. You can reply with `finish` to end the run.
+3. You can reply with `continue` to enter a second follow-up message prompt.
+4. Any other non-empty reply is treated as a direct follow-up and continues immediately.
+
+In all continue cases, the follow-up goes back to the same agent and the same saved step thread/session that emitted `done`.
 
 ---
 
@@ -398,12 +435,13 @@ Every agent response must end with a JSON contract. This is how agents tell the 
 5. Parse the final JSON contract block from output.
 6. Validate contract fields.
 7. Route to next target via config routing table.
-8. On target `human` (default for `ask-human`) or failures: pause for human input.
-9. On target `stop` (default for `done`) or `max_hops` reached: stop.
-10. Check no-progress guard (git state unchanged for too many steps?).
-11. Write JSONL event log per step. Release lock on exit/signals.
+8. On `pair` action: save return context, route to pair agent, then auto-return after one hop.
+9. On target `human` (default for `ask-human`) or failures: pause for human input.
+10. On `done -> stop`: open the human finish/continue gate. On `finish`, stop. On `continue`, resume the same step thread/session.
+11. Check no-progress guard (git state unchanged for too many steps?).
+12. Write JSONL event log per step. Release lock on exit/signals.
 
-The orchestrator maintains a rolling conversation history (last 4 turns) so each agent has context about what happened in previous steps.
+The orchestrator maintains a rolling conversation history (last 4 turns) and separate step-thread session state so returning to `implement` or `review` can continue naturally instead of restarting from scratch.
 
 ---
 
@@ -436,7 +474,7 @@ Every run produces a detailed JSONL log at `.agentpipe/runs/{runId}.jsonl`. Each
 {"ts":"2026-03-05T10:05:00.000Z","run_id":"abc-123","type":"run_completed","status":"done"}
 ```
 
-Event types: `run_started`, `step_started`, `agent_invocation`, `contract_retry`, `contract_invalid`, `step_contract`, `step_failed`, `routing_failed`, `human_response`, `no_progress_check`, `run_completed`, `signal`, `run_finalized`.
+Event types: `run_started`, `step_started`, `thread_session_started`, `thread_session_resumed`, `agent_invocation`, `contract_retry`, `contract_invalid`, `step_contract`, `step_failed`, `routing_failed`, `human_response`, `no_progress_check`, `pair_invoked`, `pair_return`, `done_gate_opened`, `done_gate_finish`, `done_gate_continue`, `run_completed`, `signal`, `run_finalized`.
 
 ---
 
@@ -573,6 +611,6 @@ console.log(result.hops);   // number of steps taken
 
 ## Why This Is Different From Cursor/IDE Multi-Agent
 
-Cursor and similar IDE tools can spin up multiple sub-agents with custom personas and models. But they can't orchestrate powerful standalone agentic coding CLIs like Claude Code, Codex, or Gemini CLI — each of which is a full autonomous system with its own shell access, tool use, and execution environment.
+Cursor and similar IDE tools can spin up multiple sub-agents with custom personas and models. But they can't orchestrate powerful standalone agentic coding CLIs like Claude Code, Codex, or [Gemini CLI](https://github.com/google-gemini/gemini-cli) — each of which is a full autonomous system with its own shell access, tool use, and execution environment.
 
 This project makes those independent CLI agents work together. Each agent runs as its own process with full autonomy over the repo. The orchestrator is just a pipe between them.

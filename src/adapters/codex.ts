@@ -1,6 +1,12 @@
 import { basename } from "node:path";
-import { AdapterInvocation, Config } from "../types";
-import { resolveAdapterCommand, runAdapter, spawnAdapterProcess } from "./base";
+import { AdapterInvocation, Config, InvokeAgentOptions } from "../types";
+import {
+  extractSessionRefFromJsonLines,
+  resolveAdapterCommand,
+  runAdapter,
+  runAdapterCommand,
+  spawnAdapterProcess,
+} from "./base";
 
 const CODEX_STREAM_ARGS = ["--json"];
 
@@ -64,15 +70,31 @@ export function resolveCodexStreamingCommand(config: Config): string[] | null {
   return [...resolveAdapterCommand("codex", config), ...CODEX_STREAM_ARGS];
 }
 
+function resolveCodexResumeCommand(config: Config, sessionRef: string): string[] | null {
+  const configured = config.adapters?.codex;
+  if (Array.isArray(configured) && configured.length > 0) {
+    return null;
+  }
+
+  return ["codex", "exec", "resume", sessionRef];
+}
+
 export function invokeCodex(
   prompt: string,
-  options: {
-    cwd: string;
-    config: Config;
-    timeoutMs: number;
-    onOutput: (chunk: string, stream: "stdout" | "stderr") => void;
-  }
+  options: InvokeAgentOptions
 ): Promise<AdapterInvocation> {
+  if (options.sessionRef) {
+    const resumeCommand = resolveCodexResumeCommand(options.config, options.sessionRef);
+    if (resumeCommand === null) {
+      return runAdapter("codex", prompt, options);
+    }
+
+    return runAdapterCommand("codex", resumeCommand, prompt, options).then((invocation) => ({
+      ...invocation,
+      sessionRef: options.sessionRef,
+    }));
+  }
+
   const commandParts = resolveCodexStreamingCommand(options.config);
   if (commandParts === null) {
     return runAdapter("codex", prompt, options);
@@ -179,6 +201,7 @@ export function invokeCodex(
         stderr,
         combined: `${stdout}${stderr}`,
         durationMs: Date.now() - startedAt,
+        sessionRef: extractSessionRefFromJsonLines(rawStdout),
       });
     });
   });

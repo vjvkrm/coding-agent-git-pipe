@@ -1,4 +1,4 @@
-import { AdapterInvocation, AgentName, Config } from "../types";
+import { AdapterInvocation, AgentName, InvokeAgentOptions } from "../types";
 import { invokeClaude } from "./claude";
 import { invokeCodex } from "./codex";
 import { invokeGemini } from "./gemini";
@@ -6,12 +6,7 @@ import { invokeGemini } from "./gemini";
 export function invokeAgent(
   agentName: AgentName,
   prompt: string,
-  options: {
-    cwd: string;
-    config: Config;
-    timeoutMs: number;
-    onOutput: (chunk: string, stream: "stdout" | "stderr") => void;
-  }
+  options: InvokeAgentOptions
 ): Promise<AdapterInvocation> {
   if (agentName === "claude") {
     return invokeClaude(prompt, options);

@@ -9,6 +9,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
       plan: "claude",
       implement: "codex",
       review: "gemini",
+      pair: "claude",
       "ask-human": "human",
       done: "stop",
     },
@@ -27,6 +28,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
       plan: [],
       implement: [],
       review: [],
+      pair: [],
     },
     ...overrides,
   };

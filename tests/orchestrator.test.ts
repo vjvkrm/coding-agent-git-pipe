@@ -4,9 +4,15 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runOrchestrator } from "../src/orchestrator";
-import { AgentName, Config, Contract } from "../src/types";
+import { AgentName, Config, Contract, InvokeAgentOptions } from "../src/types";
 
-type QueueItem = Contract | string;
+type QueueItem =
+  | Contract
+  | string
+  | {
+      response: Contract | string;
+      sessionRef?: string | null;
+    };
 
 function toFencedContract(contract: Contract): string {
   return `\`\`\`json\n${JSON.stringify(contract)}\n\`\`\``;
@@ -26,6 +32,7 @@ function writeConfig(cwd: string, overrides: Partial<Config> = {}): string {
       plan: "claude",
       implement: "codex",
       review: "gemini",
+      pair: "claude",
       "ask-human": "human",
       done: "stop",
     },
@@ -44,6 +51,7 @@ function writeConfig(cwd: string, overrides: Partial<Config> = {}): string {
       plan: [],
       implement: [],
       review: [],
+      pair: [],
     },
     ...overrides,
   };
@@ -57,20 +65,25 @@ function createInvokeStub(queue: QueueItem[]) {
   let index = 0;
   const calls: AgentName[] = [];
   const prompts: string[] = [];
+  const sessionRefs: Array<string | null | undefined> = [];
 
   return {
     calls,
     prompts,
-    invokeAgent: async (agentName: AgentName, prompt: string) => {
+    sessionRefs,
+    invokeAgent: async (agentName: AgentName, prompt: string, options: InvokeAgentOptions) => {
       calls.push(agentName);
       prompts.push(prompt);
+      sessionRefs.push(options.sessionRef);
       if (index >= queue.length) {
         throw new Error(`No more stub outputs. Missing output for call ${index + 1}`);
       }
 
       const item = queue[index];
       index += 1;
-      const stdout = typeof item === "string" ? item : toFencedContract(item);
+      const resolved = typeof item === "object" && item !== null && "response" in item ? item : null;
+      const response = resolved ? resolved.response : item;
+      const stdout = typeof response === "string" ? response : toFencedContract(response);
       return {
         agent: agentName,
         command: ["mock"],
@@ -80,6 +93,7 @@ function createInvokeStub(queue: QueueItem[]) {
         stderr: "",
         combined: stdout,
         durationMs: 1,
+        sessionRef: resolved?.sessionRef ?? null,
       };
     },
   };
@@ -113,7 +127,7 @@ test("orchestrator runs plan->implement->review->done", async () => {
       configPath,
       runtime: {
         invokeAgent: invokeStub.invokeAgent,
-        askHumanInput: async () => "unused",
+        askHumanInput: async () => "finish",
         getRepoStateSignature: () => null,
       },
     });
@@ -145,6 +159,7 @@ test("orchestrator pauses on ask-human and resumes", async () => {
     ]);
 
     let humanCalls = 0;
+    const humanReplies = ["clarification from human", "finish"];
     const result = await runOrchestrator({
       task: "start",
       cwd,
@@ -153,7 +168,7 @@ test("orchestrator pauses on ask-human and resumes", async () => {
         invokeAgent: invokeStub.invokeAgent,
         askHumanInput: async () => {
           humanCalls += 1;
-          return "clarification from human";
+          return humanReplies.shift() || "finish";
         },
         getRepoStateSignature: () => null,
       },
@@ -161,7 +176,7 @@ test("orchestrator pauses on ask-human and resumes", async () => {
 
     assert.equal(result.status, "done");
     assert.equal(result.hops, 2);
-    assert.equal(humanCalls, 1);
+    assert.equal(humanCalls, 2);
     assert.deepEqual(invokeStub.calls, ["claude", "claude"]);
   } finally {
     cleanupTempRepo(cwd);
@@ -186,7 +201,7 @@ test("orchestrator carries recent human and agent context into follow-up prompts
       },
     ]);
 
-    const humanReplies = ["please update these"];
+    const humanReplies = ["please update these", "finish"];
     const result = await runOrchestrator({
       task: "check for latest code changes and update documentation accordingly",
       cwd,
@@ -227,6 +242,7 @@ test("orchestrator injects first_agent step prompts on the initial hop", async (
         plan: [],
         implement: [],
         review: [],
+        pair: [],
       },
     });
     const invokeStub = createInvokeStub([
@@ -243,7 +259,7 @@ test("orchestrator injects first_agent step prompts on the initial hop", async (
       configPath,
       runtime: {
         invokeAgent: invokeStub.invokeAgent,
-        askHumanInput: async () => "unused",
+        askHumanInput: async () => "finish",
         getRepoStateSignature: () => null,
       },
     });
@@ -268,6 +284,7 @@ test("orchestrator switches hidden step prompts to the routed action", async () 
         plan: [],
         implement: ["Focus on making concrete repo changes."],
         review: [],
+        pair: [],
       },
     });
     const invokeStub = createInvokeStub([
@@ -289,7 +306,7 @@ test("orchestrator switches hidden step prompts to the routed action", async () 
       configPath,
       runtime: {
         invokeAgent: invokeStub.invokeAgent,
-        askHumanInput: async () => "unused",
+        askHumanInput: async () => "finish",
         getRepoStateSignature: () => null,
       },
     });
@@ -313,6 +330,7 @@ test("orchestrator preserves the current step prompt scope across ask-human", as
         plan: [],
         implement: ["Stay in implementation mode after clarification."],
         review: [],
+        pair: [],
       },
     });
     const invokeStub = createInvokeStub([
@@ -333,6 +351,7 @@ test("orchestrator preserves the current step prompt scope across ask-human", as
         message: "done",
       },
     ]);
+    const humanReplies = ["use the README path", "finish"];
 
     await runOrchestrator({
       task: "start",
@@ -340,7 +359,7 @@ test("orchestrator preserves the current step prompt scope across ask-human", as
       configPath,
       runtime: {
         invokeAgent: invokeStub.invokeAgent,
-        askHumanInput: async () => "use the README path",
+        askHumanInput: async () => humanReplies.shift() || "finish",
         getRepoStateSignature: () => null,
       },
     });
@@ -364,6 +383,7 @@ test("orchestrator preserves first_agent step prompts through initial human clar
         plan: [],
         implement: [],
         review: [],
+        pair: [],
       },
     });
     const invokeStub = createInvokeStub([
@@ -379,6 +399,7 @@ test("orchestrator preserves first_agent step prompts through initial human clar
         message: "done",
       },
     ]);
+    const humanReplies = ["README only", "finish"];
 
     await runOrchestrator({
       task: "start",
@@ -386,7 +407,7 @@ test("orchestrator preserves first_agent step prompts through initial human clar
       configPath,
       runtime: {
         invokeAgent: invokeStub.invokeAgent,
-        askHumanInput: async () => "README only",
+        askHumanInput: async () => humanReplies.shift() || "finish",
         getRepoStateSignature: () => null,
       },
     });
@@ -424,7 +445,7 @@ test("orchestrator limits invisible prompt context to the last four turns", asyn
       },
     ]);
 
-    const humanReplies = ["first human answer", "second human answer"];
+    const humanReplies = ["first human answer", "second human answer", "finish"];
     await runOrchestrator({
       task: "initial task",
       cwd,
@@ -472,7 +493,7 @@ test("orchestrator retries once on invalid contract output", async () => {
       configPath,
       runtime: {
         invokeAgent: invokeStub.invokeAgent,
-        askHumanInput: async () => "unused",
+        askHumanInput: async () => "finish",
         getRepoStateSignature: () => null,
       },
     });
@@ -495,6 +516,7 @@ test("orchestrator stops at max_hops", async () => {
         plan: "codex",
         implement: "codex",
         review: "codex",
+        pair: "codex",
         "ask-human": "human",
         done: "stop",
       },
@@ -524,7 +546,7 @@ test("orchestrator stops at max_hops", async () => {
       configPath,
       runtime: {
         invokeAgent: invokeStub.invokeAgent,
-        askHumanInput: async () => "unused",
+        askHumanInput: async () => "finish",
         getRepoStateSignature: () => null,
       },
     });
@@ -548,6 +570,7 @@ test("routing.done is respected from config (not hardcoded)", async () => {
         plan: "claude",
         implement: "codex",
         review: "gemini",
+        pair: "claude",
         "ask-human": "human",
         done: "claude",
       },
@@ -576,7 +599,7 @@ test("routing.done is respected from config (not hardcoded)", async () => {
       configPath,
       runtime: {
         invokeAgent: invokeStub.invokeAgent,
-        askHumanInput: async () => "unused",
+        askHumanInput: async () => "finish",
         getRepoStateSignature: () => null,
       },
     });
@@ -623,8 +646,9 @@ test("no-progress guard asks human after consecutive unchanged repo states", asy
         askHumanInput: async (payload) => {
           if ((payload.message || "").includes("No repository changes detected")) {
             noProgressPrompts += 1;
+            return "human guidance";
           }
-          return "human guidance";
+          return "finish";
         },
         getRepoStateSignature: () => "same-state",
       },
@@ -632,6 +656,439 @@ test("no-progress guard asks human after consecutive unchanged repo states", asy
 
     assert.equal(result.status, "done");
     assert.equal(noProgressPrompts, 1);
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
+test("implement -> review -> implement reuses the original implement session", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, { no_progress_hops: 0 });
+    const invokeStub = createInvokeStub([
+      {
+        response: {
+          contract_version: "1",
+          next_action: "implement",
+          message: "implement auth",
+        },
+        sessionRef: "first-agent-session",
+      },
+      {
+        response: {
+          contract_version: "1",
+          next_action: "review",
+          message: "implemented auth",
+        },
+        sessionRef: "implement-session",
+      },
+      {
+        response: {
+          contract_version: "1",
+          next_action: "implement",
+          message: "please tighten validation",
+        },
+        sessionRef: "review-session",
+      },
+      {
+        response: {
+          contract_version: "1",
+          next_action: "done",
+          message: "validation tightened",
+        },
+        sessionRef: "implement-session",
+      },
+    ]);
+
+    const result = await runOrchestrator({
+      task: "start",
+      cwd,
+      configPath,
+      runtime: {
+        invokeAgent: invokeStub.invokeAgent,
+        askHumanInput: async () => "finish",
+        getRepoStateSignature: () => null,
+      },
+    });
+
+    assert.equal(result.status, "done");
+    assert.deepEqual(invokeStub.calls, ["claude", "codex", "gemini", "codex"]);
+    assert.equal(invokeStub.sessionRefs[3], "implement-session");
+    assert.match(invokeStub.prompts[3], /Current handoff from gemini:\nplease tighten validation/);
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
+test("ask-human within a step resumes the same saved session", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, { no_progress_hops: 0 });
+    const invokeStub = createInvokeStub([
+      {
+        response: {
+          contract_version: "1",
+          next_action: "ask-human",
+          message: "need clarification",
+          questions: [{ id: "q1", text: "which scope?" }],
+        },
+        sessionRef: "claude-session",
+      },
+      {
+        response: {
+          contract_version: "1",
+          next_action: "done",
+          message: "done after clarification",
+        },
+        sessionRef: "claude-session",
+      },
+    ]);
+    const humanReplies = ["narrow the scope", "finish"];
+
+    const result = await runOrchestrator({
+      task: "start",
+      cwd,
+      configPath,
+      runtime: {
+        invokeAgent: invokeStub.invokeAgent,
+        askHumanInput: async () => humanReplies.shift() || "finish",
+        getRepoStateSignature: () => null,
+      },
+    });
+
+    assert.equal(result.status, "done");
+    assert.deepEqual(invokeStub.calls, ["claude", "claude"]);
+    assert.equal(invokeStub.sessionRefs[1], "claude-session");
+    assert.match(invokeStub.prompts[1], /Current handoff from human:\nnarrow the scope/);
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
+test("done routed to stop opens the finish or continue gate", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, { no_progress_hops: 0 });
+    const invokeStub = createInvokeStub([
+      {
+        response: {
+          contract_version: "1",
+          next_action: "done",
+          message: "all done",
+        },
+        sessionRef: "claude-session",
+      },
+    ]);
+
+    let doneGatePrompts = 0;
+    const result = await runOrchestrator({
+      task: "start",
+      cwd,
+      configPath,
+      runtime: {
+        invokeAgent: invokeStub.invokeAgent,
+        askHumanInput: async (payload) => {
+          if ((payload.message || "").includes('Reply with "finish" to end the run')) {
+            doneGatePrompts += 1;
+          }
+          return "finish";
+        },
+        getRepoStateSignature: () => null,
+      },
+    });
+
+    assert.equal(result.status, "done");
+    assert.equal(result.hops, 1);
+    assert.equal(doneGatePrompts, 1);
+    assert.deepEqual(invokeStub.calls, ["claude"]);
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
+test("continue after done resumes the same agent session", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, { no_progress_hops: 0 });
+    const invokeStub = createInvokeStub([
+      {
+        response: {
+          contract_version: "1",
+          next_action: "done",
+          message: "initial answer",
+        },
+        sessionRef: "claude-session",
+      },
+      {
+        response: {
+          contract_version: "1",
+          next_action: "done",
+          message: "extra detail",
+        },
+        sessionRef: "claude-session",
+      },
+    ]);
+    const humanReplies = ["continue", "tell me more", "finish"];
+
+    const result = await runOrchestrator({
+      task: "start",
+      cwd,
+      configPath,
+      runtime: {
+        invokeAgent: invokeStub.invokeAgent,
+        askHumanInput: async () => humanReplies.shift() || "finish",
+        getRepoStateSignature: () => null,
+      },
+    });
+
+    assert.equal(result.status, "done");
+    assert.equal(result.hops, 2);
+    assert.deepEqual(invokeStub.calls, ["claude", "claude"]);
+    assert.equal(invokeStub.sessionRefs[1], "claude-session");
+    assert.match(invokeStub.prompts[1], /Current handoff from human:\ntell me more/);
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
+test("pair action routes to pair agent and returns to invoking agent", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, {
+      no_progress_hops: 0,
+      routing: {
+        plan: "claude",
+        implement: "codex",
+        review: "gemini",
+        pair: "gemini",
+        "ask-human": "human",
+        done: "stop",
+      },
+    });
+    const invokeStub = createInvokeStub([
+      // Step 1: codex (implement) invokes pair
+      {
+        contract_version: "1",
+        next_action: "pair",
+        message: "should I use JWT or session tokens?",
+      },
+      // Step 2: gemini (pair) responds with advice
+      {
+        contract_version: "1",
+        next_action: "implement",
+        message: "use JWT with short-lived access tokens and refresh flow",
+      },
+      // Step 3: codex (returned from pair) finishes
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "implemented JWT flow",
+      },
+    ]);
+
+    const result = await runOrchestrator({
+      task: "start",
+      firstAgent: "codex",
+      cwd,
+      configPath,
+      runtime: {
+        invokeAgent: invokeStub.invokeAgent,
+        askHumanInput: async () => "finish",
+        getRepoStateSignature: () => null,
+      },
+    });
+
+    assert.equal(result.status, "done");
+    assert.equal(result.hops, 3);
+    // codex -> gemini (pair) -> codex (return)
+    assert.deepEqual(invokeStub.calls, ["codex", "gemini", "codex"]);
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
+test("pair thread keeps its own session while the invoking step resumes its original session", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, {
+      no_progress_hops: 0,
+      routing: {
+        plan: "claude",
+        implement: "codex",
+        review: "gemini",
+        pair: "gemini",
+        "ask-human": "human",
+        done: "stop",
+      },
+    });
+    const invokeStub = createInvokeStub([
+      {
+        response: {
+          contract_version: "1",
+          next_action: "implement",
+          message: "implement auth",
+        },
+        sessionRef: "first-agent-session",
+      },
+      {
+        response: {
+          contract_version: "1",
+          next_action: "pair",
+          message: "validate my approach",
+        },
+        sessionRef: "implement-session",
+      },
+      {
+        response: {
+          contract_version: "1",
+          next_action: "done",
+          message: "pair advice",
+        },
+        sessionRef: "pair-session",
+      },
+      {
+        response: {
+          contract_version: "1",
+          next_action: "done",
+          message: "implemented with pair feedback",
+        },
+        sessionRef: "implement-session",
+      },
+    ]);
+
+    let humanCalls = 0;
+    const result = await runOrchestrator({
+      task: "start",
+      cwd,
+      configPath,
+      runtime: {
+        invokeAgent: invokeStub.invokeAgent,
+        askHumanInput: async () => {
+          humanCalls += 1;
+          return "finish";
+        },
+        getRepoStateSignature: () => null,
+      },
+    });
+
+    assert.equal(result.status, "done");
+    assert.deepEqual(invokeStub.calls, ["claude", "codex", "gemini", "codex"]);
+    assert.equal(invokeStub.sessionRefs[2], null);
+    assert.equal(invokeStub.sessionRefs[3], "implement-session");
+    assert.equal(humanCalls, 1);
+    assert.match(
+      invokeStub.prompts[3],
+      /Current handoff from gemini:\npair advice/
+    );
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
+test("pair return restores the original step prompt scope", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, {
+      no_progress_hops: 0,
+      step_prompts: {
+        first_agent: [],
+        plan: [],
+        implement: ["Focus on concrete changes."],
+        review: [],
+        pair: ["Provide expert advice only."],
+      },
+    });
+    const invokeStub = createInvokeStub([
+      // Step 1: claude (first_agent) routes to implement
+      {
+        contract_version: "1",
+        next_action: "implement",
+        message: "implement auth",
+      },
+      // Step 2: codex (implement) invokes pair
+      {
+        contract_version: "1",
+        next_action: "pair",
+        message: "validate my approach",
+      },
+      // Step 3: claude (pair) responds
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "approach looks good",
+      },
+      // Step 4: codex (returned) finishes
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "done",
+      },
+    ]);
+
+    await runOrchestrator({
+      task: "start",
+      cwd,
+      configPath,
+      runtime: {
+        invokeAgent: invokeStub.invokeAgent,
+        askHumanInput: async () => "finish",
+        getRepoStateSignature: () => null,
+      },
+    });
+
+    assert.equal(invokeStub.prompts.length, 4);
+    // Step 2 (implement) should have implement prompts
+    assert.match(invokeStub.prompts[1], /Focus on concrete changes\./);
+    // Step 3 (pair) should have pair prompts
+    assert.match(invokeStub.prompts[2], /Provide expert advice only\./);
+    // Step 4 (returned to implement) should have implement prompts restored
+    assert.match(invokeStub.prompts[3], /Focus on concrete changes\./);
+    assert.doesNotMatch(invokeStub.prompts[3], /Provide expert advice only\./);
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
+test("pair return overrides the pair agent's own routing decision", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, { no_progress_hops: 0 });
+    const invokeStub = createInvokeStub([
+      // Step 1: claude invokes pair
+      {
+        contract_version: "1",
+        next_action: "pair",
+        message: "need advice on architecture",
+      },
+      // Step 2: pair agent tries to route to review — but return should override
+      {
+        contract_version: "1",
+        next_action: "review",
+        message: "here is my analysis",
+      },
+      // Step 3: back to claude (the invoking agent), not gemini
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "done",
+      },
+    ]);
+
+    const result = await runOrchestrator({
+      task: "start",
+      cwd,
+      configPath,
+      runtime: {
+        invokeAgent: invokeStub.invokeAgent,
+        askHumanInput: async () => "finish",
+        getRepoStateSignature: () => null,
+      },
+    });
+
+    assert.equal(result.status, "done");
+    assert.equal(result.hops, 3);
+    // claude -> claude (pair target) -> claude (forced return)
+    assert.deepEqual(invokeStub.calls, ["claude", "claude", "claude"]);
   } finally {
     cleanupTempRepo(cwd);
   }

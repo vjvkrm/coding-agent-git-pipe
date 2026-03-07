@@ -22,6 +22,7 @@ test("loadConfig provides empty step prompt arrays by default", () => {
       plan: [],
       implement: [],
       review: [],
+      pair: [],
     });
   } finally {
     cleanupTempDir(cwd);

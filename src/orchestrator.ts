@@ -24,8 +24,8 @@ export const CONTRACT_SUFFIX = [
   "```json",
   "{",
   '  "contract_version": "1",',
-  '  "next_action": "plan | implement | review | ask-human | done",',
-  '  "to": "(optional) plan | implement | review | ask-human | done",',
+  '  "next_action": "plan | implement | review | pair | ask-human | done",',
+  '  "to": "(optional) plan | implement | review | pair | ask-human | done",',
   '  "message": "task/context for next step",',
   '  "questions": [{"id":"q1","text":"Only for ask-human"}]',
   "}",
@@ -45,6 +45,19 @@ type InvokeAgentFn = NonNullable<NonNullable<RunInput["runtime"]>["invokeAgent"]
 type AskHumanInputFn = NonNullable<NonNullable<RunInput["runtime"]>["askHumanInput"]>;
 type RepoStateFn = NonNullable<NonNullable<RunInput["runtime"]>["getRepoStateSignature"]>;
 
+type StepThreadState = {
+  threadKey: string;
+  agent: AgentName;
+  sessionRef: string | null;
+  lastHistoryIndex: number;
+};
+
+interface PairReturnContext {
+  returnAgent: AgentName;
+  returnStepPromptScope: StepPromptScope;
+  returnThreadKey: string;
+}
+
 function indentBlock(value: string): string {
   return value
     .split(/\r?\n/)
@@ -52,14 +65,19 @@ function indentBlock(value: string): string {
     .join("\n");
 }
 
+function formatConversationTurns(turns: ConversationTurn[]): string {
+  return turns
+    .map((turn) => `${turn.speaker}:\n${indentBlock(clipText(turn.message, 1200))}`)
+    .join("\n");
+}
+
 function buildPromptBody(params: {
   message: string;
   speaker: PromptSpeaker;
-  history: ConversationTurn[];
   stepPrompts: string[];
+  contextLabel: string;
+  contextTurns: ConversationTurn[];
 }): string {
-  const recentTurns = params.history.slice(-PROMPT_CONTEXT_TURNS);
-  const previousTurns = recentTurns.slice(0, -1);
   const sections: string[] = [];
 
   if (params.stepPrompts.length > 0) {
@@ -73,18 +91,48 @@ function buildPromptBody(params: {
 
   sections.push(`Current handoff from ${params.speaker}:\n${params.message}`);
 
-  if (previousTurns.length > 0) {
+  if (params.contextTurns.length > 0) {
     sections.push(
-      [
-        "Recent conversation context (oldest first; use this for continuity and do not ask the human to repeat it unless necessary):",
-        previousTurns
-          .map((turn) => `${turn.speaker}:\n${indentBlock(clipText(turn.message, 1200))}`)
-          .join("\n"),
-      ].join("\n")
+      [params.contextLabel, formatConversationTurns(params.contextTurns)].join("\n")
     );
   }
 
   return sections.join("\n\n");
+}
+
+function buildInitialPromptBody(params: {
+  message: string;
+  speaker: PromptSpeaker;
+  history: ConversationTurn[];
+  stepPrompts: string[];
+}): string {
+  const recentTurns = params.history.slice(-PROMPT_CONTEXT_TURNS);
+  return buildPromptBody({
+    message: params.message,
+    speaker: params.speaker,
+    stepPrompts: params.stepPrompts,
+    contextLabel:
+      "Recent conversation context (oldest first; use this for continuity and do not ask the human to repeat it unless necessary):",
+    contextTurns: recentTurns.slice(0, -1),
+  });
+}
+
+function buildResumePromptBody(params: {
+  message: string;
+  speaker: PromptSpeaker;
+  history: ConversationTurn[];
+  stepPrompts: string[];
+  lastHistoryIndex: number;
+}): string {
+  const turnsSinceLastActive = params.history.slice(params.lastHistoryIndex);
+  return buildPromptBody({
+    message: params.message,
+    speaker: params.speaker,
+    stepPrompts: params.stepPrompts,
+    contextLabel:
+      "Conversation since this step last ran (oldest first; the existing session already has older context):",
+    contextTurns: turnsSinceLastActive.slice(0, -1),
+  });
 }
 
 function buildPrompt(message: string): string {
@@ -100,11 +148,51 @@ function appendConversationTurn(
 }
 
 function resolveStepPromptScope(action: NextAction | undefined): StepPromptScope | null {
-  if (action === "plan" || action === "implement" || action === "review") {
+  if (action === "plan" || action === "implement" || action === "review" || action === "pair") {
     return action;
   }
 
   return null;
+}
+
+function resolveNextThreadKey(routedAction: NextAction | undefined, currentThreadKey: string): string {
+  if (routedAction === "pair") {
+    return `pair:${currentThreadKey}`;
+  }
+
+  const nextScope = resolveStepPromptScope(routedAction);
+  return nextScope || currentThreadKey;
+}
+
+function getOrCreateThreadState(
+  threads: Map<string, StepThreadState>,
+  threadKey: string,
+  agent: AgentName
+): StepThreadState {
+  const existing = threads.get(threadKey);
+  if (existing) {
+    existing.agent = agent;
+    return existing;
+  }
+
+  const created: StepThreadState = {
+    threadKey,
+    agent,
+    sessionRef: null,
+    lastHistoryIndex: 0,
+  };
+  threads.set(threadKey, created);
+  return created;
+}
+
+class ContractAcquisitionError extends Error {
+  sessionRef: string | null;
+
+  constructor(message: string, sessionRef: string | null) {
+    super(message);
+    this.name = "ContractAcquisitionError";
+    this.sessionRef = sessionRef;
+  }
 }
 
 function buildRetryMessage(message: string, errorText: string): string {
@@ -159,6 +247,7 @@ function parseAndValidate(output: string): Contract {
 async function getContractWithRetry(params: {
   agent: AgentName;
   message: string;
+  sessionRef: string | null;
   config: Config;
   cwd: string;
   stepId: number;
@@ -166,10 +255,11 @@ async function getContractWithRetry(params: {
   timeoutMs: number;
   maxInvalidContractRetries: number;
   invokeAgentFn: InvokeAgentFn;
-}): Promise<{ contract: Contract; attempts: number }> {
+}): Promise<{ contract: Contract; attempts: number; sessionRef: string | null }> {
   const {
     agent,
     message,
+    sessionRef,
     config,
     cwd,
     stepId,
@@ -181,6 +271,7 @@ async function getContractWithRetry(params: {
 
   const totalAttempts = maxInvalidContractRetries + 1;
   let promptMessage = message;
+  let currentSessionRef = sessionRef;
   let lastError = new Error("Unknown contract parsing error");
 
   for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
@@ -212,6 +303,7 @@ async function getContractWithRetry(params: {
           config,
           cwd,
           timeoutMs,
+          sessionRef: currentSessionRef,
           onOutput: (chunk, stream) => {
             lastOutputAt = Date.now();
             if (stream === "stderr") {
@@ -225,6 +317,7 @@ async function getContractWithRetry(params: {
         clearInterval(heartbeatId);
       }
     })();
+    currentSessionRef = invocation.sessionRef || currentSessionRef;
 
     logger.logEvent({
       type: "agent_invocation",
@@ -253,6 +346,7 @@ async function getContractWithRetry(params: {
       return {
         contract: parsedContract,
         attempts: attempt,
+        sessionRef: currentSessionRef,
       };
     }
 
@@ -268,8 +362,9 @@ async function getContractWithRetry(params: {
     promptMessage = buildRetryMessage(message, lastError.message);
   }
 
-  throw new Error(
-    `Contract parse/validation failed after ${totalAttempts} attempt(s): ${lastError.message}`
+  throw new ContractAcquisitionError(
+    `Contract parse/validation failed after ${totalAttempts} attempt(s): ${lastError.message}`,
+    currentSessionRef
   );
 }
 
@@ -303,11 +398,14 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
   let currentMessage = input.task;
   let currentMessageSpeaker: PromptSpeaker = "human";
   let currentStepPromptScope: StepPromptScope = "first_agent";
+  let currentThreadKey = "first_agent";
   let hopCount = 0;
   let activeStepId = 0;
   let signalHandled = false;
   let noProgressCount = 0;
+  let pairReturn: PairReturnContext | null = null;
   let previousRepoState = await Promise.resolve(getRepoStateSignatureFn(cwd));
+  const stepThreads = new Map<string, StepThreadState>();
   const conversationHistory: ConversationTurn[] = [
     {
       speaker: currentMessageSpeaker,
@@ -372,19 +470,39 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
         message: clipText(currentMessage),
       });
 
-      const promptMessage = buildPromptBody({
-        message: currentMessage,
-        speaker: currentMessageSpeaker,
-        history: conversationHistory,
-        stepPrompts: config.step_prompts[currentStepPromptScope],
+      const threadState = getOrCreateThreadState(stepThreads, currentThreadKey, currentAgent);
+      const historyIndexAtPrompt = conversationHistory.length;
+      const promptMessage = threadState.sessionRef
+        ? buildResumePromptBody({
+            message: currentMessage,
+            speaker: currentMessageSpeaker,
+            history: conversationHistory,
+            stepPrompts: config.step_prompts[currentStepPromptScope],
+            lastHistoryIndex: threadState.lastHistoryIndex,
+          })
+        : buildInitialPromptBody({
+            message: currentMessage,
+            speaker: currentMessageSpeaker,
+            history: conversationHistory,
+            stepPrompts: config.step_prompts[currentStepPromptScope],
+          });
+
+      logger.logEvent({
+        type: threadState.sessionRef ? "thread_session_resumed" : "thread_session_started",
+        step_id: stepId,
+        agent: currentAgent,
+        thread_key: currentThreadKey,
+        session_ref: threadState.sessionRef,
       });
 
       let contract: Contract;
       let attempts = 0;
+      let resolvedSessionRef = threadState.sessionRef;
       try {
         const result = await getContractWithRetry({
           agent: currentAgent,
           message: promptMessage,
+          sessionRef: threadState.sessionRef,
           config,
           cwd,
           stepId,
@@ -395,7 +513,13 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
         });
         contract = result.contract;
         attempts = result.attempts;
+        resolvedSessionRef = result.sessionRef;
       } catch (error) {
+        if (error instanceof ContractAcquisitionError) {
+          resolvedSessionRef = error.sessionRef;
+        }
+        threadState.sessionRef = resolvedSessionRef;
+        threadState.lastHistoryIndex = historyIndexAtPrompt;
         logger.logEvent({
           type: "step_failed",
           step_id: stepId,
@@ -424,6 +548,8 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
         hopCount += 1;
         continue;
       }
+
+      threadState.sessionRef = resolvedSessionRef;
 
       let target: TargetName;
       try {
@@ -471,12 +597,103 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
       const routedAction = contract.to || contract.next_action;
       const nextStepPromptScope: StepPromptScope =
         resolveStepPromptScope(routedAction) || currentStepPromptScope;
+      const nextThreadKey = resolveNextThreadKey(routedAction, currentThreadKey);
 
-      if (target !== "stop") {
+      if (target !== "stop" || routedAction === "done") {
         appendConversationTurn(conversationHistory, handoffSpeaker, contract.message);
+      }
+      threadState.lastHistoryIndex = conversationHistory.length;
+
+      // --- Pair return: force routing back to the invoking agent ---
+      if (pairReturn !== null) {
+        console.log(`\n[pair] returning to ${pairReturn.returnAgent}`);
+        logger.logEvent({
+          type: "pair_return",
+          step_id: stepId,
+          return_agent: pairReturn.returnAgent,
+        });
+        currentAgent = pairReturn.returnAgent;
+        currentMessage = contract.message;
+        currentMessageSpeaker = handoffSpeaker;
+        currentStepPromptScope = pairReturn.returnStepPromptScope;
+        currentThreadKey = pairReturn.returnThreadKey;
+        pairReturn = null;
+        hopCount += 1;
+        continue;
       }
 
       if (target === "stop") {
+        if (routedAction === "done") {
+          logger.logEvent({
+            type: "done_gate_opened",
+            step_id: stepId,
+            agent: currentAgent,
+            thread_key: currentThreadKey,
+            session_ref: threadState.sessionRef,
+          });
+
+          const decision = await askHumanInputFn({
+            message:
+              `${contract.message}\n\n` +
+              'Reply with "finish" to end the run, "continue" to continue with the same agent session, or enter a follow-up message/question directly to continue with the same agent session.',
+          });
+
+          if (decision === "") {
+            throw new Error("Empty response at done gate; stopping run");
+          }
+
+          const normalizedDecision = decision.trim().toLowerCase();
+          if (normalizedDecision === "finish") {
+            console.log("\n=== done ===");
+            console.log(contract.message);
+            logger.logEvent({
+              type: "done_gate_finish",
+              step_id: stepId,
+              agent: currentAgent,
+              thread_key: currentThreadKey,
+            });
+            logger.logEvent({
+              type: "run_completed",
+              status: "done",
+              step_id: stepId,
+              message: clipText(contract.message),
+            });
+            return {
+              runId,
+              hops: stepId,
+              status: "done",
+              logPath: logger.logPath,
+            };
+          }
+
+          let followUp = decision;
+          if (normalizedDecision === "continue") {
+            followUp = await askHumanInputFn({
+              message:
+                `Continuing with ${currentAgent} on the same saved session.\n` +
+                "Enter the follow-up message or question for that agent.",
+            });
+
+            if (followUp === "") {
+              throw new Error("Empty follow-up after continue; stopping run");
+            }
+          }
+
+          logger.logEvent({
+            type: "done_gate_continue",
+            step_id: stepId,
+            agent: currentAgent,
+            thread_key: currentThreadKey,
+            response: clipText(followUp),
+          });
+          appendConversationTurn(conversationHistory, "human", followUp);
+          currentMessage = followUp;
+          currentMessageSpeaker = "human";
+          noProgressCount = 0;
+          hopCount += 1;
+          continue;
+        }
+
         console.log("\n=== done ===");
         console.log(contract.message);
         logger.logEvent({
@@ -513,7 +730,31 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
         currentMessage = response;
         currentMessageSpeaker = "human";
         currentStepPromptScope = nextStepPromptScope;
+        currentThreadKey = nextThreadKey;
         noProgressCount = 0;
+        hopCount += 1;
+        continue;
+      }
+
+      // --- Pair invocation: save return context and route to pair agent ---
+      if (routedAction === "pair") {
+        console.log(`\n[pair] ${currentAgent} invoking pair session -> ${target}`);
+        logger.logEvent({
+          type: "pair_invoked",
+          step_id: stepId,
+          invoking_agent: currentAgent,
+          pair_target: target,
+        });
+        pairReturn = {
+          returnAgent: currentAgent,
+          returnStepPromptScope: currentStepPromptScope,
+          returnThreadKey: currentThreadKey,
+        };
+        currentAgent = target as AgentName;
+        currentMessage = contract.message;
+        currentMessageSpeaker = handoffSpeaker;
+        currentStepPromptScope = nextStepPromptScope;
+        currentThreadKey = nextThreadKey;
         hopCount += 1;
         continue;
       }
@@ -550,6 +791,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
             currentMessage = response;
             currentMessageSpeaker = "human";
             currentStepPromptScope = nextStepPromptScope;
+            currentThreadKey = nextThreadKey;
             noProgressCount = 0;
             previousRepoState = currentRepoState;
             hopCount += 1;
@@ -566,6 +808,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
       currentMessage = contract.message;
       currentMessageSpeaker = handoffSpeaker;
       currentStepPromptScope = nextStepPromptScope;
+      currentThreadKey = nextThreadKey;
       hopCount += 1;
     }
 

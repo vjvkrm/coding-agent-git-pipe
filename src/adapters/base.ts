@@ -55,10 +55,28 @@ export function runAdapter(
     throw new Error(`No adapter command configured for agent=${agentName}`);
   }
 
+  return runAdapterCommand(agentName, commandParts, prompt, {
+    cwd,
+    timeoutMs,
+    onOutput,
+  });
+}
+
+export function runAdapterCommand(
+  agentName: AgentName,
+  commandParts: string[],
+  prompt: string,
+  options: {
+    cwd: string;
+    timeoutMs: number;
+    onOutput?: (chunk: string, stream: "stdout" | "stderr") => void;
+  }
+): Promise<AdapterInvocation> {
   const command = commandParts[0];
   const args = [...commandParts.slice(1), prompt];
   const startedAt = Date.now();
-  const child = spawnAdapterProcess(command, args, cwd);
+  const onOutput = typeof options.onOutput === "function" ? options.onOutput : () => {};
+  const child = spawnAdapterProcess(command, args, options.cwd);
 
   let stdout = "";
   let stderr = "";
@@ -76,7 +94,7 @@ export function runAdapter(
         child.kill("SIGKILL");
       }
     }, SIGKILL_GRACE_MS);
-  }, timeoutMs);
+  }, options.timeoutMs);
 
   child.stdout!.on("data", (chunk) => {
     const text = chunk.toString();
@@ -104,7 +122,7 @@ export function runAdapter(
       clearTimeout(timeoutId);
       if (killTimerId) clearTimeout(killTimerId);
       if (timedOut) {
-        reject(new Error(`${agentName} timed out after ${timeoutMs}ms`));
+        reject(new Error(`${agentName} timed out after ${options.timeoutMs}ms`));
         return;
       }
 
@@ -123,13 +141,13 @@ export function runAdapter(
         agent: agentName,
         command: commandParts,
         args,
-        timeoutMs,
+        timeoutMs: options.timeoutMs,
         stdout,
         stderr,
         combined,
         durationMs: Date.now() - startedAt,
       });
-      });
+    });
   });
 }
 
@@ -139,4 +157,73 @@ export function spawnAdapterProcess(command: string, args: string[], cwd: string
     env: process.env,
     stdio: ["ignore", "pipe", "pipe"],
   });
+}
+
+const SESSION_REF_KEYS = new Set([
+  "session_id",
+  "sessionId",
+  "conversation_id",
+  "conversationId",
+]);
+
+function parseJsonLine(line: string): unknown | null {
+  const trimmed = line.trim();
+  if (trimmed === "") {
+    return null;
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function findSessionRefInValue(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const nested = findSessionRefInValue(item);
+      if (nested) {
+        return nested;
+      }
+    }
+    return null;
+  }
+
+  if (typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  for (const [key, nestedValue] of Object.entries(record)) {
+    if (SESSION_REF_KEYS.has(key) && typeof nestedValue === "string" && nestedValue.trim() !== "") {
+      return nestedValue;
+    }
+  }
+
+  for (const nestedValue of Object.values(record)) {
+    const nested = findSessionRefInValue(nestedValue);
+    if (nested) {
+      return nested;
+    }
+  }
+
+  return null;
+}
+
+export function extractSessionRefFromJsonLines(output: string): string | null {
+  let lastSessionRef: string | null = null;
+
+  for (const line of output.split(/\r?\n/)) {
+    const sessionRef = findSessionRefInValue(parseJsonLine(line));
+    if (sessionRef) {
+      lastSessionRef = sessionRef;
+    }
+  }
+
+  return lastSessionRef;
 }

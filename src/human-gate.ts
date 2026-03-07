@@ -1,5 +1,5 @@
 import readline from "readline";
-import { Question } from "./types";
+import { HumanInputPayload } from "./types";
 
 function askLine(promptText: string): Promise<string> {
   return new Promise((resolve) => {
@@ -15,7 +15,7 @@ function askLine(promptText: string): Promise<string> {
   });
 }
 
-export async function askHumanInput(payload: { message?: string; questions?: Question[] }): Promise<string> {
+export async function askHumanInput(payload: HumanInputPayload): Promise<string> {
   const message = payload.message || "Agent requested human input.";
   const questions = Array.isArray(payload.questions) ? payload.questions : [];
 
@@ -29,6 +29,8 @@ export async function askHumanInput(payload: { message?: string; questions?: Que
     }
   }
 
+  console.log("");
+  console.log("Any non-empty reply continues the run. If the orchestrator offers finish/continue, a direct message continues with the same saved session.");
   console.log("");
   return askLine("human> ");
 }

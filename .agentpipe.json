@@ -1,12 +1,13 @@
 {
   "routing": {
-    "plan": "claude",
-    "implement": "codex",
-    "review": "codex",
+    "plan": "codex",
+    "implement": "claude",
+    "review": "gemini",
+    "pair": "codex",
     "ask-human": "human",
     "done": "stop"
   },
-  "first_agent": "claude",
+  "first_agent": "codex",
   "max_hops": 5,
   "agent_timeout_ms": 1800000,
   "max_invalid_contract_retries": 1,
@@ -17,6 +18,7 @@
     "first_agent": [],
     "plan": [],
     "implement": [],
-    "review": []
+    "review": [],
+    "pair": []
   }
 }
