@@ -22,6 +22,12 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
     agent_timeouts_ms: {},
     adapter_modes: {},
     adapters: {},
+    step_prompts: {
+      first_agent: [],
+      plan: [],
+      implement: [],
+      review: [],
+    },
     ...overrides,
   };
 }

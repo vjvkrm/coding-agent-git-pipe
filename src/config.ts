@@ -1,10 +1,16 @@
 import fs from "fs";
 import path from "path";
-import { AgentName, Config, NextAction, TargetName } from "./types";
+import { AgentName, Config, NextAction, StepPromptScope, TargetName } from "./types";
 
 const ALLOWED_TARGETS = new Set<TargetName>(["claude", "codex", "gemini", "human", "stop"]);
 const ALLOWED_ACTIONS = new Set<NextAction>(["plan", "implement", "review", "ask-human", "done"]);
 const ALLOWED_AGENTS = new Set<AgentName>(["claude", "codex", "gemini"]);
+const ALLOWED_STEP_PROMPT_SCOPES = new Set<StepPromptScope>([
+  "first_agent",
+  "plan",
+  "implement",
+  "review",
+]);
 
 export const DEFAULT_CONFIG: Config = {
   routing: {
@@ -24,6 +30,12 @@ export const DEFAULT_CONFIG: Config = {
   agent_timeouts_ms: {},
   adapter_modes: {},
   adapters: {},
+  step_prompts: {
+    first_agent: [],
+    plan: [],
+    implement: [],
+    review: [],
+  },
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -145,6 +157,36 @@ function validateFirstAgent(config: Config, candidatePath: string): void {
   }
 }
 
+function validateStepPrompts(config: Config, candidatePath: string): void {
+  if (!isPlainObject(config.step_prompts)) {
+    throw new Error(`Invalid step_prompts in ${candidatePath}; expected an object`);
+  }
+
+  for (const scope of Object.keys(config.step_prompts)) {
+    if (!ALLOWED_STEP_PROMPT_SCOPES.has(scope as StepPromptScope)) {
+      throw new Error(
+        `Invalid step_prompts key "${scope}" in ${candidatePath}; expected first_agent,plan,implement,review`
+      );
+    }
+  }
+
+  for (const [scope, prompts] of Object.entries(config.step_prompts)) {
+    if (!Array.isArray(prompts)) {
+      throw new Error(
+        `Invalid step_prompts.${scope} in ${candidatePath}; expected an array of strings`
+      );
+    }
+
+    for (const [index, prompt] of prompts.entries()) {
+      if (typeof prompt !== "string" || prompt.trim() === "") {
+        throw new Error(
+          `Invalid step_prompts.${scope}[${index}] in ${candidatePath}; expected non-empty string`
+        );
+      }
+    }
+  }
+}
+
 export function loadConfig(options: { cwd?: string; configPath?: string | null } = {}): Config {
   const cwd = options.cwd || process.cwd();
   const candidatePath = options.configPath || path.join(cwd, ".agentpipe.json");
@@ -174,6 +216,7 @@ export function loadConfig(options: { cwd?: string; configPath?: string | null }
   validatePaths(config, candidatePath);
   validateAdapterModes(config, candidatePath);
   validateFirstAgent(config, candidatePath);
+  validateStepPrompts(config, candidatePath);
 
   return config;
 }

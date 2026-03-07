@@ -1,6 +1,7 @@
 export type AgentName = "claude" | "codex" | "gemini";
 export type TargetName = AgentName | "human" | "stop";
 export type NextAction = "plan" | "implement" | "review" | "ask-human" | "done";
+export type StepPromptScope = "first_agent" | "plan" | "implement" | "review";
 
 export interface Question {
   id: string;
@@ -27,6 +28,7 @@ export interface Config {
   agent_timeouts_ms: Partial<Record<AgentName, number>>;
   adapter_modes: Partial<Record<AgentName, "print" | "auto">>;
   adapters: Partial<Record<AgentName, string[]>>;
+  step_prompts: Record<StepPromptScope, string[]>;
 }
 
 export interface AdapterInvocation {

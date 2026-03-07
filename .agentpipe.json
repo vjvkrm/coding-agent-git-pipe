@@ -2,7 +2,7 @@
   "routing": {
     "plan": "claude",
     "implement": "codex",
-    "review": "gemini",
+    "review": "codex",
     "ask-human": "human",
     "done": "stop"
   },
@@ -12,5 +12,11 @@
   "max_invalid_contract_retries": 1,
   "no_progress_hops": 0,
   "lock_file": ".agentpipe.lock",
-  "log_dir": ".agentpipe/runs"
+  "log_dir": ".agentpipe/runs",
+  "step_prompts": {
+    "first_agent": [],
+    "plan": [],
+    "implement": [],
+    "review": []
+  }
 }

@@ -1,27 +1,209 @@
 # coding-agent-git-pipe
 
-A lightweight TypeScript CLI orchestrator that chains autonomous AI coding agents (Claude Code, Codex, Gemini) into automated workflows using a minimal JSON contract. Each agent has full repo access, shell execution, and autonomy. The orchestrator just passes messages between them.
-
-## The Idea
+A lightweight TypeScript CLI orchestrator that chains autonomous AI coding agents (Claude Code, Codex, Gemini) into automated workflows using a minimal JSON contract.
 
 Each agent thinks it's talking to a human. It's not. It's talking to another agent through this pipe. The agents don't know each other exist — they only see abstract actions (plan, implement, review), never agent names. The orchestrator stays dumb; the agents' autonomy is the feature.
 
-## Problem
+## Table of Contents
 
-Multi-agent coding in the terminal today means manual copy-paste:
+- [Quick Start](#quick-start)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Usage](#usage)
+  - [CLI Commands](#cli-commands)
+  - [CLI Flags](#cli-flags)
+  - [Using With Fewer Agents](#using-with-fewer-agents)
+- [How It Works](#how-it-works)
+- [Configuration](#configuration)
+  - [Config Reference](#config-reference)
+  - [Step Prompts](#step-prompts)
+  - [Adapter Modes](#adapter-modes)
+  - [Custom Agent Commands](#custom-agent-commands)
+- [Contract Schema](#contract-schema)
+- [Orchestrator Loop](#orchestrator-loop)
+- [Output and Logging](#output-and-logging)
+- [Troubleshooting](#troubleshooting)
+- [Project Structure](#project-structure)
+- [Developer / API Docs](#developer--api-docs)
+- [Design Principles](#design-principles)
+- [Why This Is Different From Cursor/IDE Multi-Agent](#why-this-is-different-from-cursoride-multi-agent)
 
-1. Ask Agent A to plan.
-2. Copy response.
-3. Paste to Agent B to implement.
-4. Copy back to Agent C for review.
-5. Repeat.
+---
 
-This project automates that loop. The human approves at key decision points instead of relaying messages.
+## Quick Start
+
+```bash
+# Install globally
+npm install -g coding-agent-git-pipe
+
+# Or run directly with npx (no install needed)
+npx coding-agent-git-pipe run "implement JWT refresh token flow"
+
+# If installed globally, use either alias
+cagp run "add dark mode support"
+agent-pipe run "refactor auth module"
+```
+
+That's it. The orchestrator will route your task through Claude (plan) -> Codex (implement) -> Gemini (review) by default, streaming each agent's output to your terminal in real time.
+
+---
+
+## Prerequisites
+
+**Node.js 18+** is required.
+
+You need at least one of the following AI coding CLIs installed and authenticated:
+
+| Agent | Install | Auth |
+|-------|---------|------|
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `npm install -g @anthropic-ai/claude-code` | `claude` (follow login prompts) |
+| [Codex](https://github.com/openai/codex) | `npm install -g @openai/codex` | Set `OPENAI_API_KEY` env var |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `npm install -g @anthropic-ai/gemini-cli` or see [Gemini CLI docs](https://github.com/google-gemini/gemini-cli) | `gemini` (follow login prompts) |
+
+You do **not** need all three. See [Using With Fewer Agents](#using-with-fewer-agents) to configure routing for your setup.
+
+---
+
+## Installation
+
+### Global install (recommended)
+
+```bash
+npm install -g coding-agent-git-pipe
+```
+
+This gives you two global commands: `cagp` and `agent-pipe`.
+
+### npx (no install)
+
+```bash
+npx coding-agent-git-pipe run "your task here"
+```
+
+### From source
+
+```bash
+git clone https://github.com/user/coding-agent-git-pipe.git
+cd coding-agent-git-pipe
+npm install
+npm run build
+npm link    # makes cagp and agent-pipe available globally
+```
+
+### Verify installation
+
+```bash
+cagp --version
+cagp --help
+```
+
+---
+
+## Usage
+
+### CLI Commands
+
+The only command is `run`. Pass your task as a quoted string:
+
+```bash
+# Basic usage
+cagp run "implement JWT refresh token flow"
+
+# Both aliases work identically
+agent-pipe run "add user authentication with OAuth2"
+```
+
+The orchestrator will:
+1. Send your task to the first agent (Claude by default)
+2. Stream the agent's output to your terminal in real time
+3. Parse the agent's routing contract
+4. Hand off to the next agent automatically
+5. Repeat until done or max hops reached
+
+### CLI Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--first-agent <name>` | `claude` | Which agent receives the initial task (`claude`, `codex`, or `gemini`) |
+| `--max-hops <n>` | `10` | Maximum routing hops before stopping |
+| `--timeout-ms <n>` | `1800000` | Per-agent timeout in milliseconds (default: 30 min) |
+| `--max-retries <n>` | `1` | Contract parse retries before escalating to human |
+| `--no-progress-hops <n>` | `3` | Ask human if repo unchanged for N consecutive steps (0 = disabled) |
+| `--config <path>` | `.agentpipe.json` | Path to config JSON file |
+| `--cwd <path>` | Current dir | Working directory (must be a git repo) |
+| `-v, --version` | | Show version |
+| `-h, --help` | | Show help |
+
+### Examples
+
+```bash
+# Start with codex instead of claude, limit to 5 hops
+cagp run "add dark mode support" --first-agent codex --max-hops 5
+
+# Longer timeout for complex tasks
+agent-pipe run "refactor auth module" --timeout-ms 600000
+
+# Disable no-progress guard (useful for planning-only tasks)
+cagp run "analyze codebase architecture" --no-progress-hops 0
+
+# Use a custom config file and different working directory
+agent-pipe run "fix login bug" --config ./my-config.json --cwd /path/to/repo
+```
+
+### Using With Fewer Agents
+
+You don't need all three agents. Configure `.agentpipe.json` to route all actions to the agent(s) you have:
+
+**Claude only:**
+
+```json
+{
+  "routing": {
+    "plan": "claude",
+    "implement": "claude",
+    "review": "claude",
+    "ask-human": "human",
+    "done": "stop"
+  },
+  "first_agent": "claude"
+}
+```
+
+**Claude + Codex (no Gemini):**
+
+```json
+{
+  "routing": {
+    "plan": "claude",
+    "implement": "codex",
+    "review": "claude",
+    "ask-human": "human",
+    "done": "stop"
+  }
+}
+```
+
+**Codex only:**
+
+```json
+{
+  "routing": {
+    "plan": "codex",
+    "implement": "codex",
+    "review": "codex",
+    "ask-human": "human",
+    "done": "stop"
+  },
+  "first_agent": "codex"
+}
+```
+
+---
 
 ## How It Works
 
 ```
-You: agent-pipe run "implement JWT refresh token flow"
+You: cagp run "implement JWT refresh token flow"
 
   Orchestrator -> Claude (plans the approach)
   Claude -> Codex (implements the code, runs tests)
@@ -42,17 +224,148 @@ In `auto` mode (default), each agent:
 
 In `print` mode, agents produce text-only output (planning, analysis, feedback) without modifying the repo.
 
-## Design Principles
+The repo itself is shared state — agents read code directly from disk, not from messages. This keeps the contract small and agents fast.
 
-1. **Keep the orchestrator dumb.** Logic lives in agent prompts, not the pipe.
-2. **Keep the contract small.** A few fields for routing, nothing more.
-3. **Repo is shared state.** Agents read code directly. No code payloads in the contract.
-4. **Agents are opaque to each other.** No agent names in the contract. Only abstract actions.
-5. **Interrupt human only when needed.** On `ask-human`, parse failures, or safety limits.
+---
+
+## Configuration
+
+Create `.agentpipe.json` at your repo root (optional — all fields have sensible defaults):
+
+```json
+{
+  "routing": {
+    "plan": "claude",
+    "implement": "codex",
+    "review": "gemini",
+    "ask-human": "human",
+    "done": "stop"
+  },
+  "max_hops": 10,
+  "first_agent": "claude",
+  "agent_timeout_ms": 1800000,
+  "max_invalid_contract_retries": 1,
+  "no_progress_hops": 3,
+  "lock_file": ".agentpipe.lock",
+  "log_dir": ".agentpipe/runs",
+  "agent_timeouts_ms": {},
+  "adapter_modes": {},
+  "adapters": {},
+  "step_prompts": {
+    "first_agent": [],
+    "plan": [],
+    "implement": [],
+    "review": []
+  }
+}
+```
+
+All fields are optional. Defaults are applied for anything not specified.
+
+Add to your `.gitignore`:
+
+```
+.agentpipe.lock
+.agentpipe/
+```
+
+### Config Reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `routing` | `Record<action, target>` | plan->claude, implement->codex, review->gemini | Maps actions to agents. Targets: `claude`, `codex`, `gemini`, `human`, `stop` |
+| `max_hops` | `number` | `10` | Max routing hops before stopping |
+| `first_agent` | `string` | `"claude"` | Which agent receives the initial task |
+| `agent_timeout_ms` | `number` | `1800000` (30min) | Default per-agent timeout |
+| `max_invalid_contract_retries` | `number` | `1` | Retries for invalid contract output |
+| `no_progress_hops` | `number` | `3` | Ask human if repo unchanged for N hops (0 = disabled) |
+| `lock_file` | `string` | `".agentpipe.lock"` | Lock file path for concurrency protection |
+| `log_dir` | `string` | `".agentpipe/runs"` | JSONL log directory |
+| `agent_timeouts_ms` | `Record<agent, number>` | `{}` | Per-agent timeout overrides |
+| `adapter_modes` | `Record<agent, "print"\|"auto">` | `{}` (all default to `auto`) | Per-agent execution mode |
+| `adapters` | `Record<agent, string[]>` | `{}` | Per-agent command override |
+| `step_prompts` | `Record<scope, string[]>` | all empty arrays | Hidden prompt instructions scoped to `first_agent`, `plan`, `implement`, or `review` |
+
+### Step Prompts
+
+Use `step_prompts` when you want to bias behavior by stage without changing the visible task text.
+
+- `first_agent` applies to the initial stage and survives human clarification until the run hands off into a routed `plan`, `implement`, or `review` step.
+- `plan`, `implement`, and `review` apply based on the routed action for the current hop, not the agent name.
+- These instructions are injected into the agent prompt invisibly; they do not print to the terminal.
+
+Example:
+
+```json
+{
+  "step_prompts": {
+    "first_agent": ["Analyze first. Route intentionally. Do not implement immediately."],
+    "plan": ["Planning only. Prefer decomposition and routing over code edits."],
+    "implement": ["Focus on concrete repo changes and validation."],
+    "review": ["Review for correctness, regressions, and missing tests."]
+  }
+}
+```
+
+### Adapter Modes
+
+Each agent can run in one of two modes:
+
+| Mode | Behavior |
+|------|----------|
+| `auto` (default) | Full autonomous agent with file editing, command execution, tool use |
+| `print` | Text-only output, no tool use or file modifications |
+
+The actual commands invoked per mode:
+
+| Agent | `auto` | `print` |
+|-------|--------|---------|
+| claude | `claude --dangerously-skip-permissions -p` | `claude -p --tools ""` |
+| codex | `codex exec --skip-git-repo-check --json ...` | Not supported (use `adapters` override) |
+| gemini | `gemini -o stream-json` | Not supported (use `adapters` override) |
+
+Set `"print"` for Claude when you only want text output (e.g., for planning-only steps):
+
+```json
+{
+  "adapter_modes": {
+    "claude": "print"
+  }
+}
+```
+
+### Custom Agent Commands
+
+Override the exact command used for any agent with the `adapters` field. This takes priority over `adapter_modes`.
+
+```json
+{
+  "adapters": {
+    "claude": ["claude", "--dangerously-skip-permissions", "--model", "opus"]
+  }
+}
+```
+
+You can even swap in a completely different tool (e.g., aider) by routing to an agent slot and overriding its command:
+
+```json
+{
+  "routing": {
+    "implement": "codex"
+  },
+  "adapters": {
+    "codex": ["aider", "--yes", "--message"]
+  }
+}
+```
+
+This routes "implement" actions to the "codex" slot but runs `aider` instead.
+
+---
 
 ## Contract Schema
 
-Each agent response must end with a JSON contract:
+Every agent response must end with a JSON contract. This is how agents tell the orchestrator what should happen next:
 
 ```json
 {
@@ -72,157 +385,125 @@ Each agent response must end with a JSON contract:
 | `message` | Yes | Context passed to the next step |
 | `questions` | Only for `ask-human` | Questions for the human to answer |
 
-Note: `to` uses action names (`plan`, `implement`, `review`) — never agent names. The routing config maps actions to agents internally.
+**Important:** `to` uses action names (`plan`, `implement`, `review`) — never agent names. The routing config maps actions to agents internally. This keeps agents unaware of each other.
 
-## Configuration
-
-Create `.agentpipe.json` at repo root:
-
-```json
-{
-  "routing": {
-    "plan": "claude",
-    "implement": "codex",
-    "review": "gemini",
-    "ask-human": "human",
-    "done": "stop"
-  },
-  "max_hops": 10,
-  "first_agent": "claude",
-  "agent_timeout_ms": 1800000,
-  "max_invalid_contract_retries": 1,
-  "no_progress_hops": 3,
-  "lock_file": ".agentpipe.lock",
-  "log_dir": ".agentpipe/runs",
-  "agent_timeouts_ms": {},
-  "adapter_modes": {
-    "claude": "auto",
-    "codex": "auto",
-    "gemini": "auto"
-  },
-  "adapters": {}
-}
-```
-
-All fields are optional. Defaults are applied for anything not specified.
-
-### Adapter Modes
-
-Each agent can run in one of two modes:
-
-| Mode | Behavior |
-|------|----------|
-| `auto` | Full autonomous agent with file editing, command execution, tool use |
-| `print` | Text-only output, no tool use |
-
-Claude is invoked with `-p` in both built-in modes so it runs non-interactively in a pipe. `auto` mode keeps tool access enabled via `--dangerously-skip-permissions`; `print` mode disables tools with `--tools ""`. Codex uses `--json` in the built-in auto path so `agent-pipe` can render terminal output as events arrive. Gemini uses `-o stream-json` in the built-in auto path for the same reason. Codex and Gemini do not have built-in print-mode commands — setting `"print"` for them will throw an error. To run them in a restricted mode, provide a custom command via the `adapters` field.
-
-| Agent | `auto` | `print` |
-|-------|--------|---------|
-| claude | `claude --dangerously-skip-permissions -p` | `claude -p --tools ""` |
-| codex | `codex exec --skip-git-repo-check --json ...` | Not supported (use `adapters` override) |
-| gemini | `gemini -o stream-json` | Not supported (use `adapters` override) |
-
-Default mode is `auto` (the whole point is autonomous agents). Set `"print"` for Claude when you only want text output:
-
-```json
-{
-  "adapter_modes": {
-    "claude": "print"
-  }
-}
-```
-
-To run other agents in a restricted mode, override their command directly:
-
-```json
-{
-  "adapters": {
-    "claude": ["claude", "--dangerously-skip-permissions", "--model", "opus"]
-  }
-}
-```
-
-Explicit `adapters` entries take priority over `adapter_modes`.
-
-### Config Reference
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `routing` | `Record<action, target>` | plan->claude, implement->codex, review->gemini | Maps actions to agents |
-| `max_hops` | `number` | `10` | Max routing hops before stopping |
-| `first_agent` | `string` | `"claude"` | Which agent receives the initial task |
-| `agent_timeout_ms` | `number` | `1800000` (30min) | Default per-agent timeout |
-| `max_invalid_contract_retries` | `number` | `1` | Retries for invalid contract output |
-| `no_progress_hops` | `number` | `3` | Ask human if repo unchanged for N hops (0 = disabled) |
-| `lock_file` | `string` | `".agentpipe.lock"` | Lock file path for concurrency protection |
-| `log_dir` | `string` | `".agentpipe/runs"` | JSONL log directory |
-| `agent_timeouts_ms` | `Record<agent, number>` | `{}` | Per-agent timeout overrides |
-| `adapter_modes` | `Record<agent, "print"\|"auto">` | `{}` (all default to `auto`) | Per-agent execution mode |
-| `adapters` | `Record<agent, string[]>` | `{}` | Per-agent command override |
+---
 
 ## Orchestrator Loop
 
 1. Start run with task string.
-2. Acquire lock file (prevents concurrent runs).
-3. Invoke first agent with task + contract suffix.
-4. Stream stdout/stderr to terminal live.
-5. Parse final JSON contract block from output.
+2. Acquire lock file (prevents concurrent runs in the same repo).
+3. Invoke first agent with task + contract instructions.
+4. Stream stdout/stderr to terminal live (prefixed with agent name).
+5. Parse the final JSON contract block from output.
 6. Validate contract fields.
-7. Route to next target via config.
+7. Route to next target via config routing table.
 8. On target `human` (default for `ask-human`) or failures: pause for human input.
-9. On target `stop` (default for `done`) or `max_hops`: stop.
-10. Check no-progress guard (git state unchanged?).
-11. Write JSONL events per step. Release lock on exit/signals.
+9. On target `stop` (default for `done`) or `max_hops` reached: stop.
+10. Check no-progress guard (git state unchanged for too many steps?).
+11. Write JSONL event log per step. Release lock on exit/signals.
 
-## Local Setup
+The orchestrator maintains a rolling conversation history (last 4 turns) so each agent has context about what happened in previous steps.
 
-```bash
-npm install
-npm run build
-npm link
-cagp --help
+---
+
+## Output and Logging
+
+### Terminal output
+
+Agent output is streamed live to your terminal, prefixed with the agent name:
+
+```
+[claude] I'll plan the implementation of JWT refresh tokens...
+[claude] The approach will be:
+[claude]   1. Create a refresh token model
+[claude]   2. Add rotation logic
+...
+[codex] Implementing the JWT refresh token flow...
+[codex:stderr] Running tests...
 ```
 
-## Usage
+A heartbeat message (`... still working`) appears every 10 seconds if an agent produces no output, so you know the process hasn't hung.
 
-```bash
-# Basic run
-agent-pipe run "plan and implement JWT refresh token flow"
+### JSONL logs
 
-# Short alias
-cagp run "add dark mode support"
+Every run produces a detailed JSONL log at `.agentpipe/runs/{runId}.jsonl`. Each line is a timestamped JSON event:
 
-# With options
-agent-pipe run "refactor auth module" \
-  --first-agent codex \
-  --max-hops 5 \
-  --timeout-ms 600000 \
-  --no-progress-hops 2
-
-# Custom config
-agent-pipe run "fix login bug" --config ./my-config.json --cwd /path/to/repo
+```jsonl
+{"ts":"2026-03-05T10:00:00.000Z","run_id":"abc-123","type":"run_started","first_agent":"claude","max_hops":10}
+{"ts":"2026-03-05T10:00:00.100Z","run_id":"abc-123","type":"step_started","step_id":1,"agent":"claude"}
+{"ts":"2026-03-05T10:02:30.000Z","run_id":"abc-123","type":"step_contract","step_id":1,"contract":{...}}
+{"ts":"2026-03-05T10:05:00.000Z","run_id":"abc-123","type":"run_completed","status":"done"}
 ```
 
-### CLI Flags
+Event types: `run_started`, `step_started`, `agent_invocation`, `contract_retry`, `contract_invalid`, `step_contract`, `step_failed`, `routing_failed`, `human_response`, `no_progress_check`, `run_completed`, `signal`, `run_finalized`.
 
-| Flag | Description |
-|------|-------------|
-| `--first-agent <name>` | First agent: `claude`, `codex`, or `gemini` |
-| `--max-hops <n>` | Maximum routing hops |
-| `--timeout-ms <n>` | Per-agent timeout in milliseconds |
-| `--max-retries <n>` | Contract parse retries before escalating |
-| `--no-progress-hops <n>` | Ask human if repo unchanged for N steps |
-| `--config <path>` | Path to config JSON |
-| `--cwd <path>` | Working directory |
-| `-v, --version` | Show version |
-| `-h, --help` | Show help |
+---
+
+## Troubleshooting
+
+### "command not found: claude" (or codex, gemini)
+
+The AI CLI is not installed or not in your PATH. Install it:
+
+```bash
+npm install -g @anthropic-ai/claude-code   # Claude
+npm install -g @openai/codex                # Codex
+```
+
+### "Lock file exists" error
+
+Another `cagp` run is active in this repo, or a previous run crashed without releasing its lock. The orchestrator checks if the PID in the lock is still alive — if the process died, it reclaims the lock automatically. If you're sure no run is active:
+
+```bash
+rm .agentpipe.lock
+```
+
+### Agent keeps producing invalid contracts
+
+Increase retries: `--max-retries 3`. If persistent, the agent may not be following the contract format. Check the JSONL log for `contract_invalid` events with the raw output.
+
+### "No progress" keeps asking for human input
+
+The no-progress guard triggers when the git repo state (HEAD + working tree) is unchanged for `no_progress_hops` consecutive steps. This often happens during planning-only tasks. Disable it:
+
+```bash
+cagp run "analyze this code" --no-progress-hops 0
+```
+
+### Agent times out
+
+Default timeout is 30 minutes per agent. For complex tasks:
+
+```bash
+cagp run "large refactoring task" --timeout-ms 3600000   # 1 hour
+```
+
+Or set per-agent timeouts in config:
+
+```json
+{
+  "agent_timeouts_ms": {
+    "codex": 3600000
+  }
+}
+```
+
+### Run seems stuck / no output
+
+Wait 10 seconds — a heartbeat message will appear if the agent is still running. AI agents can take time on complex tasks, especially in `auto` mode when they're running commands.
+
+---
 
 ## Tests
 
 ```bash
 npm test
 ```
+
+Uses Node.js built-in test runner with `tsx` for TypeScript support. Tests use runtime injection to stub agent invocations — no real AI CLIs needed.
+
+---
 
 ## Project Structure
 
@@ -242,14 +523,53 @@ src/
   adapters/
     index.ts            Agent dispatcher
     base.ts             Spawn + capture logic, mode-based command resolution
-    claude.ts           Claude Code adapter
-    codex.ts            Codex adapter
-    gemini.ts           Gemini adapter
+    claude.ts           Claude Code adapter (stream-json parsing)
+    codex.ts            Codex adapter (JSON line parsing)
+    gemini.ts           Gemini adapter (stream-json delta parsing)
 tests/
   contract.test.ts      Contract validation tests
   parser.test.ts        Parser extraction tests
   orchestrator.test.ts  End-to-end orchestrator tests
+  orchestrator-output.test.ts  Output formatting tests
+  adapter-base.test.ts  Base adapter tests
+  claude-adapter.test.ts
+  codex-adapter.test.ts
+  gemini-adapter.test.ts
 ```
+
+---
+
+## Developer / API Docs
+
+For programmatic usage, custom adapters, runtime injection, and internal module contracts, see **[API.md](./API.md)**.
+
+Quick example — embedding the orchestrator in your own tool:
+
+```typescript
+import { runOrchestrator } from "coding-agent-git-pipe/src/orchestrator";
+
+const result = await runOrchestrator({
+  task: "implement JWT refresh token flow",
+  firstAgent: "claude",
+  maxHops: 5,
+  cwd: "/path/to/repo",
+});
+
+console.log(result.status); // "done" | "max-hops"
+console.log(result.hops);   // number of steps taken
+```
+
+---
+
+## Design Principles
+
+1. **Keep the orchestrator dumb.** Logic lives in agent prompts, not the pipe.
+2. **Keep the contract small.** A few fields for routing, nothing more.
+3. **Repo is shared state.** Agents read code directly. No code payloads in the contract.
+4. **Agents are opaque to each other.** No agent names in the contract. Only abstract actions.
+5. **Interrupt human only when needed.** On `ask-human`, parse failures, or safety limits.
+
+---
 
 ## Why This Is Different From Cursor/IDE Multi-Agent
 

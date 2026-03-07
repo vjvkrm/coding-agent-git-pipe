@@ -39,6 +39,12 @@ function writeConfig(cwd: string, overrides: Partial<Config> = {}): string {
     agent_timeouts_ms: {},
     adapter_modes: {},
     adapters: {},
+    step_prompts: {
+      first_agent: [],
+      plan: [],
+      implement: [],
+      review: [],
+    },
     ...overrides,
   };
 
@@ -50,11 +56,14 @@ function writeConfig(cwd: string, overrides: Partial<Config> = {}): string {
 function createInvokeStub(queue: QueueItem[]) {
   let index = 0;
   const calls: AgentName[] = [];
+  const prompts: string[] = [];
 
   return {
     calls,
-    invokeAgent: async (agentName: AgentName) => {
+    prompts,
+    invokeAgent: async (agentName: AgentName, prompt: string) => {
       calls.push(agentName);
+      prompts.push(prompt);
       if (index >= queue.length) {
         throw new Error(`No more stub outputs. Missing output for call ${index + 1}`);
       }
@@ -154,6 +163,288 @@ test("orchestrator pauses on ask-human and resumes", async () => {
     assert.equal(result.hops, 2);
     assert.equal(humanCalls, 1);
     assert.deepEqual(invokeStub.calls, ["claude", "claude"]);
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
+test("orchestrator carries recent human and agent context into follow-up prompts", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, { no_progress_hops: 0, first_agent: "codex" });
+    const invokeStub = createInvokeStub([
+      {
+        contract_version: "1",
+        next_action: "ask-human",
+        message: "I reviewed the docs. Please update README.md and API.md.",
+        questions: [{ id: "q1", text: "Should I apply those documentation edits?" }],
+      },
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "docs updated",
+      },
+    ]);
+
+    const humanReplies = ["please update these"];
+    const result = await runOrchestrator({
+      task: "check for latest code changes and update documentation accordingly",
+      cwd,
+      configPath,
+      runtime: {
+        invokeAgent: invokeStub.invokeAgent,
+        askHumanInput: async () => humanReplies.shift() || "",
+        getRepoStateSignature: () => null,
+      },
+    });
+
+    assert.equal(result.status, "done");
+    assert.equal(invokeStub.prompts.length, 2);
+    assert.match(
+      invokeStub.prompts[1],
+      /Current handoff from human:\nplease update these/
+    );
+    assert.match(
+      invokeStub.prompts[1],
+      /codex:\n  I reviewed the docs\. Please update README\.md and API\.md\./
+    );
+    assert.match(
+      invokeStub.prompts[1],
+      /human:\n  check for latest code changes and update documentation accordingly/
+    );
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
+test("orchestrator injects first_agent step prompts on the initial hop", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, {
+      no_progress_hops: 0,
+      step_prompts: {
+        first_agent: ["Analyze first and route intentionally."],
+        plan: [],
+        implement: [],
+        review: [],
+      },
+    });
+    const invokeStub = createInvokeStub([
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "done",
+      },
+    ]);
+
+    await runOrchestrator({
+      task: "start",
+      cwd,
+      configPath,
+      runtime: {
+        invokeAgent: invokeStub.invokeAgent,
+        askHumanInput: async () => "unused",
+        getRepoStateSignature: () => null,
+      },
+    });
+
+    assert.equal(invokeStub.prompts.length, 1);
+    assert.match(
+      invokeStub.prompts[0],
+      /Step-specific instructions \(follow these in addition to the task\):\n- Analyze first and route intentionally\./
+    );
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
+test("orchestrator switches hidden step prompts to the routed action", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, {
+      no_progress_hops: 0,
+      step_prompts: {
+        first_agent: ["Do not implement immediately."],
+        plan: [],
+        implement: ["Focus on making concrete repo changes."],
+        review: [],
+      },
+    });
+    const invokeStub = createInvokeStub([
+      {
+        contract_version: "1",
+        next_action: "implement",
+        message: "implement the fix",
+      },
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "done",
+      },
+    ]);
+
+    await runOrchestrator({
+      task: "start",
+      cwd,
+      configPath,
+      runtime: {
+        invokeAgent: invokeStub.invokeAgent,
+        askHumanInput: async () => "unused",
+        getRepoStateSignature: () => null,
+      },
+    });
+
+    assert.equal(invokeStub.prompts.length, 2);
+    assert.match(invokeStub.prompts[0], /Do not implement immediately\./);
+    assert.match(invokeStub.prompts[1], /Focus on making concrete repo changes\./);
+    assert.doesNotMatch(invokeStub.prompts[1], /Do not implement immediately\./);
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
+test("orchestrator preserves the current step prompt scope across ask-human", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, {
+      no_progress_hops: 0,
+      step_prompts: {
+        first_agent: ["Route the initial request before coding."],
+        plan: [],
+        implement: ["Stay in implementation mode after clarification."],
+        review: [],
+      },
+    });
+    const invokeStub = createInvokeStub([
+      {
+        contract_version: "1",
+        next_action: "implement",
+        message: "implement the fix",
+      },
+      {
+        contract_version: "1",
+        next_action: "ask-human",
+        message: "need one detail",
+        questions: [{ id: "q1", text: "which path?" }],
+      },
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "done",
+      },
+    ]);
+
+    await runOrchestrator({
+      task: "start",
+      cwd,
+      configPath,
+      runtime: {
+        invokeAgent: invokeStub.invokeAgent,
+        askHumanInput: async () => "use the README path",
+        getRepoStateSignature: () => null,
+      },
+    });
+
+    assert.equal(invokeStub.prompts.length, 3);
+    assert.match(invokeStub.prompts[1], /Stay in implementation mode after clarification\./);
+    assert.match(invokeStub.prompts[2], /Stay in implementation mode after clarification\./);
+    assert.match(invokeStub.prompts[2], /Current handoff from human:\nuse the README path/);
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
+test("orchestrator preserves first_agent step prompts through initial human clarification", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, {
+      no_progress_hops: 0,
+      step_prompts: {
+        first_agent: ["Only analyze and route on the first stage."],
+        plan: [],
+        implement: [],
+        review: [],
+      },
+    });
+    const invokeStub = createInvokeStub([
+      {
+        contract_version: "1",
+        next_action: "ask-human",
+        message: "need clarification",
+        questions: [{ id: "q1", text: "which file?" }],
+      },
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "done",
+      },
+    ]);
+
+    await runOrchestrator({
+      task: "start",
+      cwd,
+      configPath,
+      runtime: {
+        invokeAgent: invokeStub.invokeAgent,
+        askHumanInput: async () => "README only",
+        getRepoStateSignature: () => null,
+      },
+    });
+
+    assert.equal(invokeStub.prompts.length, 2);
+    assert.match(invokeStub.prompts[0], /Only analyze and route on the first stage\./);
+    assert.match(invokeStub.prompts[1], /Only analyze and route on the first stage\./);
+    assert.match(invokeStub.prompts[1], /Current handoff from human:\nREADME only/);
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
+test("orchestrator limits invisible prompt context to the last four turns", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, { no_progress_hops: 0 });
+    const invokeStub = createInvokeStub([
+      {
+        contract_version: "1",
+        next_action: "ask-human",
+        message: "first agent question",
+        questions: [{ id: "q1", text: "first?" }],
+      },
+      {
+        contract_version: "1",
+        next_action: "ask-human",
+        message: "second agent question",
+        questions: [{ id: "q2", text: "second?" }],
+      },
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "finished",
+      },
+    ]);
+
+    const humanReplies = ["first human answer", "second human answer"];
+    await runOrchestrator({
+      task: "initial task",
+      cwd,
+      configPath,
+      runtime: {
+        invokeAgent: invokeStub.invokeAgent,
+        askHumanInput: async () => humanReplies.shift() || "",
+        getRepoStateSignature: () => null,
+      },
+    });
+
+    assert.equal(invokeStub.prompts.length, 3);
+    assert.match(
+      invokeStub.prompts[2],
+      /Current handoff from human:\nsecond human answer/
+    );
+    assert.match(invokeStub.prompts[2], /claude:\n  first agent question/);
+    assert.match(invokeStub.prompts[2], /human:\n  first human answer/);
+    assert.match(invokeStub.prompts[2], /claude:\n  second agent question/);
+    assert.doesNotMatch(invokeStub.prompts[2], /human:\n  initial task/);
   } finally {
     cleanupTempRepo(cwd);
   }

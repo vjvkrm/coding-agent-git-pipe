@@ -7,7 +7,16 @@ import { askHumanInput as defaultAskHumanInput } from "./human-gate";
 import { invokeAgent as defaultInvokeAgent } from "./adapters";
 import { acquireRunLock, createRunLogger, resolveTimeoutMs } from "./runtime";
 import { getRepoStateSignature as defaultGetRepoStateSignature } from "./git-state";
-import { AgentName, Config, Contract, OrchestratorResult, RunInput, TargetName } from "./types";
+import {
+  AgentName,
+  Config,
+  Contract,
+  NextAction,
+  OrchestratorResult,
+  RunInput,
+  StepPromptScope,
+  TargetName,
+} from "./types";
 
 export const CONTRACT_SUFFIX = [
   "---",
@@ -24,13 +33,78 @@ export const CONTRACT_SUFFIX = [
 ].join("\n");
 
 const AGENT_HEARTBEAT_MS = 10000;
+const PROMPT_CONTEXT_TURNS = 4;
+
+type PromptSpeaker = AgentName | "human";
+type ConversationTurn = {
+  speaker: PromptSpeaker;
+  message: string;
+};
 
 type InvokeAgentFn = NonNullable<NonNullable<RunInput["runtime"]>["invokeAgent"]>;
 type AskHumanInputFn = NonNullable<NonNullable<RunInput["runtime"]>["askHumanInput"]>;
 type RepoStateFn = NonNullable<NonNullable<RunInput["runtime"]>["getRepoStateSignature"]>;
 
+function indentBlock(value: string): string {
+  return value
+    .split(/\r?\n/)
+    .map((line) => `  ${line}`)
+    .join("\n");
+}
+
+function buildPromptBody(params: {
+  message: string;
+  speaker: PromptSpeaker;
+  history: ConversationTurn[];
+  stepPrompts: string[];
+}): string {
+  const recentTurns = params.history.slice(-PROMPT_CONTEXT_TURNS);
+  const previousTurns = recentTurns.slice(0, -1);
+  const sections: string[] = [];
+
+  if (params.stepPrompts.length > 0) {
+    sections.push(
+      [
+        "Step-specific instructions (follow these in addition to the task):",
+        ...params.stepPrompts.map((prompt) => `- ${prompt}`),
+      ].join("\n")
+    );
+  }
+
+  sections.push(`Current handoff from ${params.speaker}:\n${params.message}`);
+
+  if (previousTurns.length > 0) {
+    sections.push(
+      [
+        "Recent conversation context (oldest first; use this for continuity and do not ask the human to repeat it unless necessary):",
+        previousTurns
+          .map((turn) => `${turn.speaker}:\n${indentBlock(clipText(turn.message, 1200))}`)
+          .join("\n"),
+      ].join("\n")
+    );
+  }
+
+  return sections.join("\n\n");
+}
+
 function buildPrompt(message: string): string {
   return `${message}\n\n${CONTRACT_SUFFIX}`;
+}
+
+function appendConversationTurn(
+  history: ConversationTurn[],
+  speaker: PromptSpeaker,
+  message: string
+): void {
+  history.push({ speaker, message });
+}
+
+function resolveStepPromptScope(action: NextAction | undefined): StepPromptScope | null {
+  if (action === "plan" || action === "implement" || action === "review") {
+    return action;
+  }
+
+  return null;
 }
 
 function buildRetryMessage(message: string, errorText: string): string {
@@ -227,11 +301,19 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
 
   let currentAgent: AgentName = input.firstAgent || config.first_agent;
   let currentMessage = input.task;
+  let currentMessageSpeaker: PromptSpeaker = "human";
+  let currentStepPromptScope: StepPromptScope = "first_agent";
   let hopCount = 0;
   let activeStepId = 0;
   let signalHandled = false;
   let noProgressCount = 0;
   let previousRepoState = await Promise.resolve(getRepoStateSignatureFn(cwd));
+  const conversationHistory: ConversationTurn[] = [
+    {
+      speaker: currentMessageSpeaker,
+      message: currentMessage,
+    },
+  ];
 
   const handleSignal = (signalName: string): void => {
     if (signalHandled) {
@@ -290,12 +372,19 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
         message: clipText(currentMessage),
       });
 
+      const promptMessage = buildPromptBody({
+        message: currentMessage,
+        speaker: currentMessageSpeaker,
+        history: conversationHistory,
+        stepPrompts: config.step_prompts[currentStepPromptScope],
+      });
+
       let contract: Contract;
       let attempts = 0;
       try {
         const result = await getContractWithRetry({
           agent: currentAgent,
-          message: currentMessage,
+          message: promptMessage,
           config,
           cwd,
           stepId,
@@ -328,7 +417,9 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
           reason: "agent-failure",
           response: clipText(humanResponse),
         });
+        appendConversationTurn(conversationHistory, "human", humanResponse);
         currentMessage = humanResponse;
+        currentMessageSpeaker = "human";
         noProgressCount = 0;
         hopCount += 1;
         continue;
@@ -360,7 +451,9 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
           reason: "routing-error",
           response: clipText(humanResponse),
         });
+        appendConversationTurn(conversationHistory, "human", humanResponse);
         currentMessage = humanResponse;
+        currentMessageSpeaker = "human";
         noProgressCount = 0;
         hopCount += 1;
         continue;
@@ -374,6 +467,14 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
         contract,
         target,
       });
+      const handoffSpeaker = currentAgent;
+      const routedAction = contract.to || contract.next_action;
+      const nextStepPromptScope: StepPromptScope =
+        resolveStepPromptScope(routedAction) || currentStepPromptScope;
+
+      if (target !== "stop") {
+        appendConversationTurn(conversationHistory, handoffSpeaker, contract.message);
+      }
 
       if (target === "stop") {
         console.log("\n=== done ===");
@@ -408,7 +509,10 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
           reason: (contract.to || contract.next_action) === "ask-human" ? "ask-human" : `routed-to-human:${contract.to || contract.next_action}`,
           response: clipText(response),
         });
+        appendConversationTurn(conversationHistory, "human", response);
         currentMessage = response;
+        currentMessageSpeaker = "human";
+        currentStepPromptScope = nextStepPromptScope;
         noProgressCount = 0;
         hopCount += 1;
         continue;
@@ -441,8 +545,11 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
               reason: "no-progress",
               response: clipText(response),
             });
+            appendConversationTurn(conversationHistory, "human", response);
             currentAgent = target as AgentName;
             currentMessage = response;
+            currentMessageSpeaker = "human";
+            currentStepPromptScope = nextStepPromptScope;
             noProgressCount = 0;
             previousRepoState = currentRepoState;
             hopCount += 1;
@@ -457,6 +564,8 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
 
       currentAgent = target as AgentName;
       currentMessage = contract.message;
+      currentMessageSpeaker = handoffSpeaker;
+      currentStepPromptScope = nextStepPromptScope;
       hopCount += 1;
     }
 

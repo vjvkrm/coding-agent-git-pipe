@@ -19,6 +19,7 @@ This document covers the programmatic API for embedding `coding-agent-git-pipe` 
 - [Configuration](#configuration)
   - [Config](#config)
   - [loadConfig](#loadconfig)
+  - [step_prompts](#step_prompts)
 - [Adapters](#adapters)
   - [Adapter Modes](#adapter-modes)
   - [invokeAgent](#invokeagent)
@@ -262,6 +263,7 @@ interface Config {
   agent_timeouts_ms: Partial<Record<AgentName, number>>;
   adapter_modes: Partial<Record<AgentName, "print" | "auto">>;
   adapters: Partial<Record<AgentName, string[]>>;
+  step_prompts: Record<"first_agent" | "plan" | "implement" | "review", string[]>;
 }
 ```
 
@@ -290,6 +292,28 @@ Loads and validates `.agentpipe.json`. Deep-merges user config over defaults. If
 | `no_progress_hops` | `3` |
 | `adapter_modes` | `{}` (all agents default to `"auto"`) |
 | `adapters` | `{}` (uses mode-based defaults) |
+| `step_prompts` | `{ first_agent: [], plan: [], implement: [], review: [] }` |
+
+### `step_prompts`
+
+`step_prompts` lets you inject hidden prompt instructions by orchestration stage:
+
+- `first_agent` applies to the initial stage and persists through human clarification until the run hands off into a routed `plan`, `implement`, or `review` step.
+- `plan`, `implement`, and `review` apply by routed action, not by agent identity.
+- These instructions are prepended to the agent prompt and are not printed to the terminal stream.
+
+Example:
+
+```json
+{
+  "step_prompts": {
+    "first_agent": ["Analyze first and route intentionally."],
+    "plan": ["Planning only. Avoid code edits unless explicitly needed."],
+    "implement": ["Focus on concrete repo changes and validation."],
+    "review": ["Review for correctness, regressions, and missing tests."]
+  }
+}
+```
 
 ---
 
