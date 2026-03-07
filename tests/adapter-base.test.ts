@@ -78,3 +78,26 @@ test("timeout sends SIGTERM then SIGKILL for unresponsive child", async () => {
   // Should not hang forever — SIGKILL must have fired
   assert.ok(elapsed < 15000, `Expected under 15s, got ${elapsed}ms — SIGKILL may not have fired`);
 });
+
+test("runAdapter closes stdin so EOF-gated commands can exit", async () => {
+  const config = makeConfig({
+    adapters: {
+      claude: [
+        "node",
+        "-e",
+        `
+          let input = "";
+          process.stdin.setEncoding("utf8");
+          process.stdin.on("data", (chunk) => { input += chunk; });
+          process.stdin.on("end", () => {
+            process.stdout.write(input === "" ? "stdin-closed\\n" : "stdin-open\\n");
+          });
+          process.stdin.resume();
+        `,
+      ],
+    },
+  });
+
+  const invocation = await runAdapter("claude", "ignored prompt", { config, timeoutMs: 1000 });
+  assert.equal(invocation.stdout, "stdin-closed\n");
+});

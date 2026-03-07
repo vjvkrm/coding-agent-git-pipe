@@ -1,4 +1,4 @@
-import { spawn } from "child_process";
+import { ChildProcess, spawn } from "child_process";
 import { AdapterInvocation, AgentName, Config } from "../types";
 
 export const PRINT_ADAPTER_COMMANDS: Record<AgentName, string[]> = {
@@ -58,7 +58,7 @@ export function runAdapter(
   const command = commandParts[0];
   const args = [...commandParts.slice(1), prompt];
   const startedAt = Date.now();
-  const child = spawn(command, args, { cwd, env: process.env });
+  const child = spawnAdapterProcess(command, args, cwd);
 
   let stdout = "";
   let stderr = "";
@@ -78,14 +78,14 @@ export function runAdapter(
     }, SIGKILL_GRACE_MS);
   }, timeoutMs);
 
-  child.stdout.on("data", (chunk) => {
+  child.stdout!.on("data", (chunk) => {
     const text = chunk.toString();
     stdout += text;
     combined += text;
     onOutput(text, "stdout");
   });
 
-  child.stderr.on("data", (chunk) => {
+  child.stderr!.on("data", (chunk) => {
     const text = chunk.toString();
     stderr += text;
     combined += text;
@@ -129,6 +129,14 @@ export function runAdapter(
         combined,
         durationMs: Date.now() - startedAt,
       });
-    });
+      });
+  });
+}
+
+export function spawnAdapterProcess(command: string, args: string[], cwd: string): ChildProcess {
+  return spawn(command, args, {
+    cwd,
+    env: process.env,
+    stdio: ["ignore", "pipe", "pipe"],
   });
 }

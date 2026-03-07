@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeClaudeStreamOutput } from "../src/adapters/claude";
+import { formatClaudeToolUse, normalizeClaudeStreamOutput } from "../src/adapters/claude";
 
 test("normalizeClaudeStreamOutput prefers final result text", () => {
   const output = [
@@ -22,4 +22,24 @@ test("normalizeClaudeStreamOutput falls back to latest assistant text", () => {
   ].join("\n");
 
   assert.equal(normalizeClaudeStreamOutput(output), "Hello");
+});
+
+test("normalizeClaudeStreamOutput ignores thinking-only assistant content", () => {
+  const output = [
+    '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Inspecting files"}}}',
+    '{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"Inspecting files"},{"type":"text","text":"Visible answer"}]}}',
+  ].join("\n");
+
+  assert.equal(normalizeClaudeStreamOutput(output), "Visible answer");
+});
+
+test("formatClaudeToolUse summarizes tool name and input", () => {
+  assert.equal(
+    formatClaudeToolUse({
+      type: "tool_use",
+      name: "Read",
+      input: { file_path: "/repo/README.md" },
+    }),
+    '(tool) Read {"file_path":"/repo/README.md"}'
+  );
 });

@@ -1,7 +1,6 @@
 import { basename } from "node:path";
-import { spawn } from "child_process";
 import { AdapterInvocation, Config } from "../types";
-import { resolveAdapterCommand, runAdapter } from "./base";
+import { resolveAdapterCommand, runAdapter, spawnAdapterProcess } from "./base";
 
 const GEMINI_STREAM_ARGS = ["-o", "stream-json"];
 
@@ -133,7 +132,7 @@ export function invokeGemini(
   const command = commandParts[0];
   const args = [...commandParts.slice(1), prompt];
   const startedAt = Date.now();
-  const child = spawn(command, args, { cwd: options.cwd, env: process.env });
+  const child = spawnAdapterProcess(command, args, options.cwd);
 
   let rawStdout = "";
   let stderr = "";
@@ -156,7 +155,7 @@ export function invokeGemini(
     }, SIGKILL_GRACE_MS);
   }, options.timeoutMs);
 
-  child.stdout.on("data", (chunk) => {
+  child.stdout!.on("data", (chunk) => {
     const text = chunk.toString();
     rawStdout += text;
     stdoutBuffer += text;
@@ -201,7 +200,7 @@ export function invokeGemini(
     }
   });
 
-  child.stderr.on("data", (chunk) => {
+  child.stderr!.on("data", (chunk) => {
     const text = chunk.toString();
     stderr += text;
     options.onOutput(text, "stderr");
