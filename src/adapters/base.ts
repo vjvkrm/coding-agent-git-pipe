@@ -20,7 +20,19 @@ function resolveCommand(agentName: AgentName, config: Config): string[] {
   }
 
   const mode = config.adapter_modes?.[agentName] || "auto";
-  return mode === "print" ? PRINT_ADAPTER_COMMANDS[agentName] : AUTO_ADAPTER_COMMANDS[agentName];
+  if (mode === "print") {
+    const printCmd = PRINT_ADAPTER_COMMANDS[agentName];
+    const autoCmd = AUTO_ADAPTER_COMMANDS[agentName];
+    if (JSON.stringify(printCmd) === JSON.stringify(autoCmd)) {
+      throw new Error(
+        `Print mode is not supported for ${agentName} — no distinct print command exists. ` +
+          `Use the "adapters" config field to provide a custom command, or use "auto" mode.`
+      );
+    }
+    return printCmd;
+  }
+
+  return AUTO_ADAPTER_COMMANDS[agentName];
 }
 
 export function runAdapter(
@@ -52,10 +64,18 @@ export function runAdapter(
   let stderr = "";
   let combined = "";
   let timedOut = false;
+  let closed = false;
 
+  const SIGKILL_GRACE_MS = 5000;
+  let killTimerId: ReturnType<typeof setTimeout> | undefined;
   const timeoutId = setTimeout(() => {
     timedOut = true;
     child.kill("SIGTERM");
+    killTimerId = setTimeout(() => {
+      if (!closed) {
+        child.kill("SIGKILL");
+      }
+    }, SIGKILL_GRACE_MS);
   }, timeoutMs);
 
   child.stdout.on("data", (chunk) => {
@@ -75,11 +95,14 @@ export function runAdapter(
   return new Promise<AdapterInvocation>((resolve, reject) => {
     child.on("error", (error) => {
       clearTimeout(timeoutId);
+      if (killTimerId) clearTimeout(killTimerId);
       reject(new Error(`Failed to start ${agentName}: ${(error as Error).message}`));
     });
 
     child.on("close", (code) => {
+      closed = true;
       clearTimeout(timeoutId);
+      if (killTimerId) clearTimeout(killTimerId);
       if (timedOut) {
         reject(new Error(`${agentName} timed out after ${timeoutMs}ms`));
         return;

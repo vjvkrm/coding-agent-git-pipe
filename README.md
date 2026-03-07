@@ -115,25 +115,25 @@ Each agent can run in one of two modes:
 | `auto` | Full autonomous agent with file editing, command execution, tool use |
 | `print` | Text-only output, no tool use |
 
-Default commands per mode (only Claude differs between modes):
+Print mode is currently only supported for Claude, which has a distinct print command (`claude -p`). Codex and Gemini do not have built-in print-mode commands — setting `"print"` for them will throw an error. To run them in a restricted mode, provide a custom command via the `adapters` field.
 
 | Agent | `auto` | `print` |
 |-------|--------|---------|
 | claude | `claude --dangerously-skip-permissions` | `claude -p` |
-| codex | `codex exec --skip-git-repo-check ...` | *(same)* |
-| gemini | `gemini` | *(same)* |
+| codex | `codex exec --skip-git-repo-check ...` | Not supported (use `adapters` override) |
+| gemini | `gemini` | Not supported (use `adapters` override) |
 
-Default mode is `auto` (the whole point is autonomous agents). Set `"print"` per agent when you only want text output:
+Default mode is `auto` (the whole point is autonomous agents). Set `"print"` for Claude when you only want text output:
 
 ```json
 {
   "adapter_modes": {
-    "gemini": "print"
+    "claude": "print"
   }
 }
 ```
 
-To fully override an agent's command, use the `adapters` field:
+To run other agents in a restricted mode, override their command directly:
 
 ```json
 {
@@ -170,8 +170,8 @@ Explicit `adapters` entries take priority over `adapter_modes`.
 5. Parse final JSON contract block from output.
 6. Validate contract fields.
 7. Route to next target via config.
-8. On `ask-human` or failures: pause for human input.
-9. On `done` or `max_hops`: stop.
+8. On target `human` (default for `ask-human`) or failures: pause for human input.
+9. On target `stop` (default for `done`) or `max_hops`: stop.
 10. Check no-progress guard (git state unchanged?).
 11. Write JSONL events per step. Release lock on exit/signals.
 

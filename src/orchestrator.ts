@@ -326,7 +326,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
         target,
       });
 
-      if (target === "stop" || contract.next_action === "done") {
+      if (target === "stop") {
         console.log("\n=== done ===");
         console.log(contract.message);
         logger.logEvent({
@@ -356,7 +356,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
         logger.logEvent({
           type: "human_response",
           step_id: stepId,
-          reason: "ask-human",
+          reason: (contract.to || contract.next_action) === "ask-human" ? "ask-human" : `routed-to-human:${contract.to || contract.next_action}`,
           response: clipText(response),
         });
         currentMessage = response;

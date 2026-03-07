@@ -68,7 +68,7 @@ The main entry point. Runs the full orchestration loop: invoke agent, parse cont
 1. Loads config from `.agentpipe.json` (or `input.configPath`).
 2. Acquires a lock file to prevent concurrent runs.
 3. Loops: invoke agent -> parse contract -> route to next -> repeat.
-4. Stops on `done`, `max_hops`, or unrecoverable error.
+4. Stops when the resolved target is `stop` (default for `done`), `max_hops`, or unrecoverable error.
 5. Logs every event to a JSONL file.
 6. Releases lock on exit (including SIGINT/SIGTERM).
 
@@ -237,9 +237,9 @@ Determines which agent (or special target) handles the next step.
 **Resolution order:**
 1. If `contract.to` is set, use it as the action to route.
 2. Otherwise, use `contract.next_action`.
-3. If the action is `done` -> return `"stop"`.
-4. If the action is `ask-human` -> return `"human"`.
-5. Otherwise, look up `config.routing[action]` to get the agent name.
+3. Look up `config.routing[action]` to get the target.
+
+All actions — including `done` and `ask-human` — are resolved through `config.routing`. The default config maps `done` to `"stop"` and `ask-human` to `"human"`, but these can be overridden.
 
 Returns a `TargetName`: `"claude" | "codex" | "gemini" | "human" | "stop"`.
 
@@ -311,11 +311,13 @@ Agents run with full autonomy — file editing, command execution, tool use.
 **`print` mode:**
 Agents produce text-only output, no tool use or file modifications.
 
+Print mode is only supported for Claude, which has a distinct print command. Setting print mode for Codex or Gemini will throw an error — use the `adapters` config field to provide a custom command instead.
+
 | Agent | Command |
 |-------|---------|
 | claude | `claude -p` |
-| codex | `codex exec --skip-git-repo-check -c model_reasoning_effort="medium"` |
-| gemini | `gemini` |
+| codex | Not supported (use `adapters` override) |
+| gemini | Not supported (use `adapters` override) |
 
 **Resolution priority:**
 1. `config.adapters[agent]` — explicit command array (highest priority).
@@ -366,7 +368,7 @@ The core adapter implementation. Spawns a child process, streams output, enforce
 3. Passes the prompt as the last CLI argument.
 4. Streams stdout/stderr chunks via `onOutput` callback.
 5. Captures full stdout, stderr, and combined output.
-6. Kills with SIGTERM on timeout.
+6. On timeout: sends SIGTERM, then SIGKILL after a 5-second grace period if the process hasn't exited.
 7. Rejects on non-zero exit code or spawn error.
 
 **Returns:**
@@ -563,7 +565,7 @@ Every run produces a JSONL file at `{log_dir}/{run_id}.jsonl`. Each line is a JS
 | `step_contract` | `step_id`, `agent`, `parse_attempts`, `contract`, `target` | Valid contract parsed |
 | `step_failed` | `step_id`, `agent`, `error` | Agent invocation failed entirely |
 | `routing_failed` | `step_id`, `agent`, `contract`, `error` | Router could not resolve target |
-| `human_response` | `step_id`, `reason`, `response` | Human provided input. Reason: `ask-human`, `agent-failure`, `routing-error`, `no-progress` |
+| `human_response` | `step_id`, `reason`, `response` | Human provided input. Reason: `ask-human`, `routed-to-human:<action>` (when a non-ask-human action routes to human), `agent-failure`, `routing-error`, `no-progress` |
 | `no_progress_check` | `step_id`, `no_progress_count` | Repo state compared |
 | `run_completed` | `status`, `step_id`, `message` | Run finished (`done` or `max-hops`) |
 | `signal` | `signal`, `step_id` | SIGINT/SIGTERM received |

@@ -246,6 +246,60 @@ test("orchestrator stops at max_hops", async () => {
   }
 });
 
+test("routing.done is respected from config (not hardcoded)", async () => {
+  const cwd = createTempRepo();
+  try {
+    // Remap "done" to "claude" instead of "stop" — agent should keep running
+    const configPath = writeConfig(cwd, {
+      no_progress_hops: 0,
+      max_hops: 3,
+      routing: {
+        plan: "claude",
+        implement: "codex",
+        review: "gemini",
+        "ask-human": "human",
+        done: "claude",
+      },
+    });
+    const invokeStub = createInvokeStub([
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "I think we are done",
+      },
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "still done",
+      },
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "still done again",
+      },
+    ]);
+
+    const result = await runOrchestrator({
+      task: "start",
+      cwd,
+      configPath,
+      runtime: {
+        invokeAgent: invokeStub.invokeAgent,
+        askHumanInput: async () => "unused",
+        getRepoStateSignature: () => null,
+      },
+    });
+
+    // With done -> claude, the orchestrator should NOT stop on done.
+    // It should keep routing to claude until max_hops.
+    assert.equal(result.status, "max-hops");
+    assert.equal(result.hops, 3);
+    assert.deepEqual(invokeStub.calls, ["claude", "claude", "claude"]);
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
 test("no-progress guard asks human after consecutive unchanged repo states", async () => {
   const cwd = createTempRepo();
   try {
