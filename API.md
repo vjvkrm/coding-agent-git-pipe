@@ -304,18 +304,18 @@ Agents run with full autonomy — file editing, command execution, tool use.
 
 | Agent | Command |
 |-------|---------|
-| claude | `claude --dangerously-skip-permissions` |
-| codex | `codex exec --skip-git-repo-check -c model_reasoning_effort="medium"` |
-| gemini | `gemini` |
+| claude | `claude --dangerously-skip-permissions -p` |
+| codex | `codex exec --skip-git-repo-check --json -c model_reasoning_effort="medium"` |
+| gemini | `gemini -o stream-json` |
 
 **`print` mode:**
 Agents produce text-only output, no tool use or file modifications.
 
-Print mode is only supported for Claude, which has a distinct print command. Setting print mode for Codex or Gemini will throw an error — use the `adapters` config field to provide a custom command instead.
+Claude is invoked with `-p` in both built-in modes so it runs non-interactively in a pipe. `auto` mode keeps tool access enabled via `--dangerously-skip-permissions`; `print` mode disables tools with `--tools ""`. Codex uses `--json` in the built-in auto path so `agent-pipe` can render terminal output as events arrive. Gemini uses `-o stream-json` in the built-in auto path for the same reason. Setting print mode for Codex or Gemini will throw an error — use the `adapters` config field to provide a custom command instead.
 
 | Agent | Command |
 |-------|---------|
-| claude | `claude -p` |
+| claude | `claude -p --tools ""` |
 | codex | Not supported (use `adapters` override) |
 | gemini | Not supported (use `adapters` override) |
 

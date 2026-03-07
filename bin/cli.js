@@ -10,4 +10,14 @@ if (!fs.existsSync(entry)) {
   process.exit(1);
 }
 
-require(entry);
+const cli = require(entry);
+
+if (typeof cli.main !== "function") {
+  console.error(`CLI entry at ${entry} does not export a main() function.`);
+  process.exit(1);
+}
+
+Promise.resolve(cli.main(process.argv)).catch((error) => {
+  console.error(`Fatal error: ${error.message}`);
+  process.exit(1);
+});

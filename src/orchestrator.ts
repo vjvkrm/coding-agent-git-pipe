@@ -23,6 +23,8 @@ export const CONTRACT_SUFFIX = [
   "```",
 ].join("\n");
 
+const AGENT_HEARTBEAT_MS = 10000;
+
 type InvokeAgentFn = NonNullable<NonNullable<RunInput["runtime"]>["invokeAgent"]>;
 type AskHumanInputFn = NonNullable<NonNullable<RunInput["runtime"]>["askHumanInput"]>;
 type RepoStateFn = NonNullable<NonNullable<RunInput["runtime"]>["getRepoStateSignature"]>;
@@ -45,6 +47,34 @@ function clipText(value: string, max = 3000): string {
     return value;
   }
   return `${value.slice(0, max)}...[truncated]`;
+}
+
+export function createPrefixedWriter(
+  target: NodeJS.WriteStream,
+  prefix: string
+): (chunk: string) => void {
+  let atLineStart = true;
+
+  return (chunk: string): void => {
+    if (chunk === "") {
+      return;
+    }
+
+    let output = "";
+    for (const char of chunk) {
+      if (atLineStart) {
+        output += prefix;
+        atLineStart = false;
+      }
+
+      output += char;
+      if (char === "\n") {
+        atLineStart = true;
+      }
+    }
+
+    target.write(output);
+  };
 }
 
 function parseAndValidate(output: string): Contract {
@@ -90,18 +120,37 @@ async function getContractWithRetry(params: {
       });
     }
 
-    const invocation = await invokeAgentFn(agent, buildPrompt(promptMessage), {
-      config,
-      cwd,
-      timeoutMs,
-      onOutput: (chunk, stream) => {
-        if (stream === "stderr") {
-          process.stderr.write(chunk);
-          return;
-        }
-        process.stdout.write(chunk);
-      },
-    });
+    const writeStdout = createPrefixedWriter(process.stdout, `[${agent}] `);
+    const writeStderr = createPrefixedWriter(process.stderr, `[${agent}:stderr] `);
+    let lastOutputAt = Date.now();
+    const heartbeatId = setInterval(() => {
+      const idleMs = Date.now() - lastOutputAt;
+      if (idleMs < AGENT_HEARTBEAT_MS) {
+        return;
+      }
+
+      process.stdout.write(`\n[${agent}] ... still working (${Math.floor(idleMs / 1000)}s idle)\n`);
+    }, AGENT_HEARTBEAT_MS);
+
+    const invocation = await (async () => {
+      try {
+        return await invokeAgentFn(agent, buildPrompt(promptMessage), {
+          config,
+          cwd,
+          timeoutMs,
+          onOutput: (chunk, stream) => {
+            lastOutputAt = Date.now();
+            if (stream === "stderr") {
+              writeStderr(chunk);
+              return;
+            }
+            writeStdout(chunk);
+          },
+        });
+      } finally {
+        clearInterval(heartbeatId);
+      }
+    })();
 
     logger.logEvent({
       type: "agent_invocation",

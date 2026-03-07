@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runAdapter } from "../src/adapters/base";
+import { AUTO_ADAPTER_COMMANDS, PRINT_ADAPTER_COMMANDS, runAdapter } from "../src/adapters/base";
 import { Config } from "../src/types";
 
 function makeConfig(overrides: Partial<Config> = {}): Config {
@@ -46,6 +46,11 @@ test("print mode throws for gemini (no distinct print command)", () => {
       return true;
     }
   );
+});
+
+test("built-in claude commands are non-interactive in both modes", () => {
+  assert.deepEqual(AUTO_ADAPTER_COMMANDS.claude, ["claude", "--dangerously-skip-permissions", "-p"]);
+  assert.deepEqual(PRINT_ADAPTER_COMMANDS.claude, ["claude", "-p", "--tools", ""]);
 });
 
 test("timeout sends SIGTERM then SIGKILL for unresponsive child", async () => {

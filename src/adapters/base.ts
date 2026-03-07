@@ -2,18 +2,18 @@ import { spawn } from "child_process";
 import { AdapterInvocation, AgentName, Config } from "../types";
 
 export const PRINT_ADAPTER_COMMANDS: Record<AgentName, string[]> = {
-  claude: ["claude", "-p"],
+  claude: ["claude", "-p", "--tools", ""],
   codex: ["codex", "exec", "--skip-git-repo-check", "-c", 'model_reasoning_effort="medium"'],
   gemini: ["gemini"],
 };
 
 export const AUTO_ADAPTER_COMMANDS: Record<AgentName, string[]> = {
-  claude: ["claude", "--dangerously-skip-permissions"],
+  claude: ["claude", "--dangerously-skip-permissions", "-p"],
   codex: ["codex", "exec", "--skip-git-repo-check", "-c", 'model_reasoning_effort="medium"'],
   gemini: ["gemini"],
 };
 
-function resolveCommand(agentName: AgentName, config: Config): string[] {
+export function resolveAdapterCommand(agentName: AgentName, config: Config): string[] {
   const configured = config.adapters?.[agentName];
   if (Array.isArray(configured) && configured.length > 0) {
     return configured;
@@ -50,7 +50,7 @@ export function runAdapter(
   const timeoutMs = options.timeoutMs;
   const onOutput = typeof options.onOutput === "function" ? options.onOutput : () => {};
 
-  const commandParts = resolveCommand(agentName, config);
+  const commandParts = resolveAdapterCommand(agentName, config);
   if (!Array.isArray(commandParts) || commandParts.length === 0) {
     throw new Error(`No adapter command configured for agent=${agentName}`);
   }
