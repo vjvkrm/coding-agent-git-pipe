@@ -1,5 +1,5 @@
 {
-  "name": "coding-agent-git-pipe",
+  "name": "agent-pipe",
   "version": "1.0.0",
   "description": "Orchestrate autonomous coding CLIs into plan→implement→review workflows",
   "license": "AGPL-3.0-only",
