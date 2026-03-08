@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AUTO_ADAPTER_COMMANDS, PRINT_ADAPTER_COMMANDS, runAdapter } from "../src/adapters/base";
+import {
+  AUTO_ADAPTER_COMMANDS,
+  PRINT_ADAPTER_COMMANDS,
+  resolveAdapterCommand,
+  runAdapter,
+} from "../src/adapters/base";
 import { Config } from "../src/types";
 
 function makeConfig(overrides: Partial<Config> = {}): Config {
@@ -22,6 +27,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
     log_dir: ".agentpipe/runs",
     agent_timeouts_ms: {},
     adapter_modes: {},
+    adapter_args: {},
     adapters: {},
     step_prompts: {
       first_agent: [],
@@ -30,6 +36,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
       review: [],
       pair: [],
     },
+    review_gate: true,
     ...overrides,
   };
 }
@@ -59,6 +66,25 @@ test("print mode throws for gemini (no distinct print command)", () => {
 test("built-in claude commands are non-interactive in both modes", () => {
   assert.deepEqual(AUTO_ADAPTER_COMMANDS.claude, ["claude", "--dangerously-skip-permissions", "-p"]);
   assert.deepEqual(PRINT_ADAPTER_COMMANDS.claude, ["claude", "-p", "--tools", ""]);
+});
+
+test("resolveAdapterCommand appends adapter_args to built-in commands", () => {
+  const config = makeConfig({
+    adapter_args: {
+      codex: ["--full-auto", "-m", "gpt-5.4"],
+    },
+  });
+
+  assert.deepEqual(resolveAdapterCommand("codex", config), [
+    "codex",
+    "exec",
+    "--skip-git-repo-check",
+    "-c",
+    'model_reasoning_effort="medium"',
+    "--full-auto",
+    "-m",
+    "gpt-5.4",
+  ]);
 });
 
 test("timeout sends SIGTERM then SIGKILL for unresponsive child", async () => {

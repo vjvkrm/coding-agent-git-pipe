@@ -1,4 +1,5 @@
 import path from "path";
+import { writeDefaultConfig } from "./config";
 import { runOrchestrator } from "./orchestrator";
 import { AgentName } from "./types";
 
@@ -7,9 +8,13 @@ const pkg = require("../package.json") as { version?: string };
 function printHelp(): void {
   console.log("agent-pipe (cagp)");
   console.log("");
-  console.log('Usage:\n  agent-pipe run "<task>" [options]');
+  console.log('Usage:\n  agent-pipe init [options]\n  agent-pipe run "<task>" [options]');
   console.log("");
-  console.log("Options:");
+  console.log("Commands:");
+  console.log("  init                        Create a starter .agentpipe.json in the target repo");
+  console.log("  run                         Execute an orchestration task");
+  console.log("");
+  console.log("Run options:");
   console.log("  --first-agent <name>       First agent (claude|codex|gemini)");
   console.log("  --max-hops <number>        Maximum routing hops before pause");
   console.log("  --timeout-ms <number>      Per-agent timeout in milliseconds");
@@ -17,6 +22,11 @@ function printHelp(): void {
   console.log("  --no-progress-hops <num>   Ask human if repo doesn't change for N steps");
   console.log("  --config <path>            Path to config JSON (default: .agentpipe.json)");
   console.log("  --cwd <path>               Working directory (default: current directory)");
+  console.log("");
+  console.log("Init options:");
+  console.log("  --config <path>            Path to write the config JSON (default: .agentpipe.json)");
+  console.log("  --cwd <path>               Target repo directory (default: current directory)");
+  console.log("  --force                    Overwrite an existing config file");
   console.log("  -h, --help                 Show help");
   console.log("  -v, --version              Show version");
 }
@@ -100,6 +110,52 @@ function parseRunArgs(args: string[]): {
   return parsed;
 }
 
+function parseInitArgs(args: string[]): {
+  cwd: string;
+  configPathRaw: string | null;
+  configPath: string | null;
+  force: boolean;
+  extraArgs: string[];
+} {
+  const parsed = {
+    cwd: process.cwd(),
+    configPathRaw: null as string | null,
+    configPath: null as string | null,
+    force: false,
+    extraArgs: [] as string[],
+  };
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    const next = args[i + 1];
+
+    if (arg === "--config" && next) {
+      parsed.configPathRaw = next;
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--cwd" && next) {
+      parsed.cwd = path.resolve(process.cwd(), next);
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--force") {
+      parsed.force = true;
+      continue;
+    }
+
+    parsed.extraArgs.push(arg);
+  }
+
+  parsed.configPath = parsed.configPathRaw
+    ? path.resolve(parsed.cwd, parsed.configPathRaw)
+    : path.join(parsed.cwd, ".agentpipe.json");
+
+  return parsed;
+}
+
 export async function main(argv = process.argv): Promise<void> {
   const args = argv.slice(2);
   const command = args[0];
@@ -114,10 +170,29 @@ export async function main(argv = process.argv): Promise<void> {
     process.exit(0);
   }
 
-  if (command !== "run") {
+  if (command !== "run" && command !== "init") {
     console.error(`Unknown command: ${command}`);
     printHelp();
     process.exit(1);
+  }
+
+  if (command === "init") {
+    const parsed = parseInitArgs(args.slice(1));
+
+    if (parsed.extraArgs.length > 0) {
+      console.error(`init does not accept positional arguments: ${parsed.extraArgs.join(" ")}`);
+      process.exit(1);
+    }
+
+    const createdPath = writeDefaultConfig({
+      cwd: parsed.cwd,
+      configPath: parsed.configPath,
+      force: parsed.force,
+    });
+
+    console.log(`Created ${createdPath}`);
+    console.log('Next: edit the config if needed, then run `agent-pipe run "<task>"` from that repo.');
+    process.exit(0);
   }
 
   const parsed = parseRunArgs(args.slice(1));

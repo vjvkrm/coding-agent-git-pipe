@@ -19,6 +19,7 @@ This document covers the programmatic API for embedding `coding-agent-git-pipe` 
 - [Configuration](#configuration)
   - [Config](#config)
   - [loadConfig](#loadconfig)
+  - [writeDefaultConfig](#writedefaultconfig)
   - [step_prompts](#step_prompts)
 - [Adapters](#adapters)
   - [Adapter Modes](#adapter-modes)
@@ -226,7 +227,7 @@ You must end your response with exactly one JSON block and no text after it:
   "contract_version": "1",
   "next_action": "plan | implement | review | pair | ask-human | done",
   "to": "(optional) plan | implement | review | pair | ask-human | done",
-  "message": "task/context for next step",
+  "message": "concise technical handoff for the next step",
   "questions": [{"id":"q1","text":"Only for ask-human"}]
 }
 ```
@@ -271,8 +272,10 @@ interface Config {
   log_dir: string;
   agent_timeouts_ms: Partial<Record<AgentName, number>>;
   adapter_modes: Partial<Record<AgentName, "print" | "auto">>;
+  adapter_args: Partial<Record<AgentName, string[]>>;
   adapters: Partial<Record<AgentName, string[]>>;
   step_prompts: Record<"first_agent" | "plan" | "implement" | "review" | "pair", string[]>;
+  review_gate: boolean;
 }
 ```
 
@@ -295,14 +298,34 @@ Loads and validates `.agentpipe.json`. Deep-merges user config over defaults. If
 | `routing.implement` | `"codex"` |
 | `routing.review` | `"gemini"` |
 | `routing.pair` | `"claude"` |
-| `max_hops` | `10` |
+| `max_hops` | `20` |
 | `first_agent` | `"claude"` |
 | `agent_timeout_ms` | `1800000` (30 min) |
 | `max_invalid_contract_retries` | `1` |
 | `no_progress_hops` | `3` |
+| `review_gate` | `true` |
 | `adapter_modes` | `{}` (all agents default to `"auto"`) |
+| `adapter_args` | `{}` (extra CLI flags appended to the resolved adapter command) |
 | `adapters` | `{}` (uses mode-based defaults) |
 | `step_prompts` | `{ first_agent: [], plan: [], implement: [], review: [], pair: [] }` |
+
+The CLI command `agent-pipe init` writes this default config shape to `.agentpipe.json` in the target repo.
+
+### `writeDefaultConfig`
+
+```typescript
+function writeDefaultConfig(options?: {
+  cwd?: string;
+  configPath?: string | null;
+  force?: boolean;
+}): string
+```
+
+Writes a starter config file using the current defaults and returns the created path.
+
+- Default path: `<cwd>/.agentpipe.json`
+- If the file already exists, it throws unless `force` is `true`
+- This is what powers the CLI flow: `agent-pipe init`
 
 ### `step_prompts`
 
@@ -327,6 +350,24 @@ Example:
 }
 ```
 
+### Handoff Behavior
+
+Every agent prompt includes a hidden handoff rubric:
+
+- treat the incoming handoff as the primary continuation state
+- when routing again, make `message` a concise technical handoff
+- include current state/diagnosis, exact next task, and relevant files/tests/constraints when applicable
+
+This is prompt-shaping only; it improves handoff quality without changing the contract schema.
+
+### `review_gate`
+
+`review_gate` controls whether `implement -> done` is allowed to end the run directly.
+
+- When `true` (default), an `implement` hop that emits `done` is redirected to the configured `review` route first.
+- When `false`, `implement -> done` behaves normally and reaches the done gate immediately.
+- `review -> done` is never intercepted.
+
 ---
 
 ## Adapters
@@ -349,6 +390,30 @@ Agents produce text-only output, no tool use or file modifications.
 
 Claude is invoked with `-p` in both built-in modes so it runs non-interactively in a pipe. `auto` mode keeps tool access enabled via `--dangerously-skip-permissions`; `print` mode disables tools with `--tools ""`. Codex uses `--json` in the built-in auto path so `agent-pipe` can render terminal output as events arrive. Gemini uses `-o stream-json` in the built-in auto path for the same reason. Setting print mode for Codex or Gemini will throw an error — use the `adapters` config field to provide a custom command instead.
 
+### `adapter_args`
+
+`adapter_args` appends extra CLI flags to the resolved command for each adapter.
+
+Use this when you want to keep the built-in adapter behavior but set things like:
+
+- model selection
+- sandbox or write permissions
+- approval / permission mode
+
+Example:
+
+```json
+{
+  "adapter_args": {
+    "claude": ["--model", "opus", "--permission-mode", "auto"],
+    "codex": ["--full-auto", "-m", "gpt-5.4"],
+    "gemini": ["--model", "gemini-2.5-pro"]
+  }
+}
+```
+
+This is usually preferable to replacing the whole command in `adapters`, because the built-in streaming and session-resume paths still apply.
+
 | Agent | Command |
 |-------|---------|
 | claude | `claude -p --tools ""` |
@@ -356,9 +421,10 @@ Claude is invoked with `-p` in both built-in modes so it runs non-interactively 
 | gemini | Not supported (use `adapters` override) |
 
 **Resolution priority:**
-1. `config.adapters[agent]` — explicit command array (highest priority).
+1. `config.adapters[agent]` — explicit base command array (highest priority).
 2. `config.adapter_modes[agent]` — selects from built-in print/auto commands.
-3. Falls back to `"auto"` mode defaults.
+3. `config.adapter_args[agent]` — appended after the resolved base command.
+4. Falls back to `"auto"` mode defaults.
 
 ---
 
@@ -608,6 +674,7 @@ Every run produces a JSONL file at `{log_dir}/{run_id}.jsonl`. Each line is a JS
 | `no_progress_check` | `step_id`, `no_progress_count` | Repo state compared |
 | `pair_invoked` | `step_id`, `invoking_agent`, `pair_target` | Agent initiated a pair session |
 | `pair_return` | `step_id`, `return_agent` | Pair session ended, returning to invoking agent |
+| `review_gate_redirect` | `step_id`, `agent`, `original_action`, `redirected_to` | `implement -> done` was intercepted and routed to `review` |
 | `done_gate_opened` | `step_id`, `agent`, `thread_key`, `session_ref` | Agent proposed completion and the finish/continue gate opened |
 | `done_gate_finish` | `step_id`, `agent`, `thread_key` | Human chose `finish` |
 | `done_gate_continue` | `step_id`, `agent`, `thread_key`, `response` | Human continued with a follow-up that resumes the same session |
@@ -618,7 +685,7 @@ Every run produces a JSONL file at `{log_dir}/{run_id}.jsonl`. Each line is a JS
 ### Example Log
 
 ```jsonl
-{"ts":"2026-03-05T10:00:00.000Z","run_id":"abc-123","type":"run_started","cwd":"/repo","first_agent":"claude","max_hops":10}
+{"ts":"2026-03-05T10:00:00.000Z","run_id":"abc-123","type":"run_started","cwd":"/repo","first_agent":"claude","max_hops":20}
 {"ts":"2026-03-05T10:00:00.100Z","run_id":"abc-123","type":"step_started","step_id":1,"agent":"claude","timeout_ms":1800000}
 {"ts":"2026-03-05T10:02:30.000Z","run_id":"abc-123","type":"agent_invocation","step_id":1,"agent":"claude","attempt":1,"duration_ms":150000}
 {"ts":"2026-03-05T10:02:30.001Z","run_id":"abc-123","type":"step_contract","step_id":1,"agent":"claude","parse_attempts":1,"contract":{"contract_version":"1","next_action":"implement","message":"..."}}

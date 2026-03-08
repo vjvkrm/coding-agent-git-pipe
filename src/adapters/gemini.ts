@@ -101,24 +101,20 @@ function hasExplicitGeminiOutputMode(commandParts: string[]): boolean {
 }
 
 export function resolveGeminiStreamingCommand(config: Config): string[] | null {
-  const configured = config.adapters?.gemini;
-  if (Array.isArray(configured) && configured.length > 0) {
-    if (!isGeminiCliCommand(configured)) {
-      return null;
-    }
-
-    if (hasGeminiStreamOutput(configured)) {
-      return configured;
-    }
-
-    if (hasExplicitGeminiOutputMode(configured)) {
-      return null;
-    }
-
-    return [...configured, ...GEMINI_STREAM_ARGS];
+  const commandParts = resolveAdapterCommand("gemini", config);
+  if (!isGeminiCliCommand(commandParts)) {
+    return null;
   }
 
-  return [...resolveAdapterCommand("gemini", config), ...GEMINI_STREAM_ARGS];
+  if (hasGeminiStreamOutput(commandParts)) {
+    return commandParts;
+  }
+
+  if (hasExplicitGeminiOutputMode(commandParts)) {
+    return null;
+  }
+
+  return [...commandParts, ...GEMINI_STREAM_ARGS];
 }
 
 export function invokeGemini(

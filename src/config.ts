@@ -22,7 +22,7 @@ export const DEFAULT_CONFIG: Config = {
     "ask-human": "human",
     done: "stop",
   },
-  max_hops: 10,
+  max_hops: 20,
   first_agent: "claude",
   agent_timeout_ms: 1800000,
   max_invalid_contract_retries: 1,
@@ -31,6 +31,7 @@ export const DEFAULT_CONFIG: Config = {
   log_dir: ".agentpipe/runs",
   agent_timeouts_ms: {},
   adapter_modes: {},
+  adapter_args: {},
   adapters: {},
   step_prompts: {
     first_agent: [],
@@ -39,7 +40,12 @@ export const DEFAULT_CONFIG: Config = {
     review: [],
     pair: [],
   },
+  review_gate: true,
 };
+
+export function createDefaultConfig(): Config {
+  return JSON.parse(JSON.stringify(DEFAULT_CONFIG)) as Config;
+}
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -133,6 +139,38 @@ function validatePaths(config: Config, candidatePath: string): void {
 
 const ALLOWED_MODES = new Set(["print", "auto"]);
 
+function validateAgentStringArrayMap(
+  value: unknown,
+  candidatePath: string,
+  fieldName: "adapter_args" | "adapters"
+): void {
+  if (!isPlainObject(value)) {
+    throw new Error(`Invalid ${fieldName} in ${candidatePath}; expected an object`);
+  }
+
+  for (const [agent, entries] of Object.entries(value)) {
+    if (!ALLOWED_AGENTS.has(agent as AgentName)) {
+      throw new Error(
+        `Invalid ${fieldName} key "${agent}" in ${candidatePath}; expected claude,codex,gemini`
+      );
+    }
+
+    if (!Array.isArray(entries)) {
+      throw new Error(
+        `Invalid ${fieldName}.${agent} in ${candidatePath}; expected an array of strings`
+      );
+    }
+
+    for (const [index, entry] of entries.entries()) {
+      if (typeof entry !== "string" || entry.trim() === "") {
+        throw new Error(
+          `Invalid ${fieldName}.${agent}[${index}] in ${candidatePath}; expected non-empty string`
+        );
+      }
+    }
+  }
+}
+
 function validateAdapterModes(config: Config, candidatePath: string): void {
   if (!isPlainObject(config.adapter_modes)) {
     throw new Error(`Invalid adapter_modes in ${candidatePath}; expected an object`);
@@ -195,7 +233,7 @@ export function loadConfig(options: { cwd?: string; configPath?: string | null }
   const candidatePath = options.configPath || path.join(cwd, ".agentpipe.json");
 
   if (!fs.existsSync(candidatePath)) {
-    return { ...DEFAULT_CONFIG };
+    return createDefaultConfig();
   }
 
   let parsed: unknown;
@@ -218,8 +256,33 @@ export function loadConfig(options: { cwd?: string; configPath?: string | null }
   validateTimeouts(config, candidatePath);
   validatePaths(config, candidatePath);
   validateAdapterModes(config, candidatePath);
+  validateAgentStringArrayMap(config.adapter_args, candidatePath, "adapter_args");
+  validateAgentStringArrayMap(config.adapters, candidatePath, "adapters");
   validateFirstAgent(config, candidatePath);
   validateStepPrompts(config, candidatePath);
 
+  if (typeof config.review_gate !== "boolean") {
+    throw new Error(`Invalid review_gate in ${candidatePath}; expected a boolean`);
+  }
+
   return config;
+}
+
+export function writeDefaultConfig(options: {
+  cwd?: string;
+  configPath?: string | null;
+  force?: boolean;
+} = {}): string {
+  const cwd = options.cwd || process.cwd();
+  const candidatePath = options.configPath || path.join(cwd, ".agentpipe.json");
+
+  if (fs.existsSync(candidatePath) && !options.force) {
+    throw new Error(
+      `Config already exists at ${candidatePath}; rerun with --force to overwrite it`
+    );
+  }
+
+  fs.mkdirSync(path.dirname(candidatePath), { recursive: true });
+  fs.writeFileSync(candidatePath, `${JSON.stringify(createDefaultConfig(), null, 2)}\n`, "utf8");
+  return candidatePath;
 }

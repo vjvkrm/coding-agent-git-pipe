@@ -22,6 +22,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
     log_dir: ".agentpipe/runs",
     agent_timeouts_ms: {},
     adapter_modes: {},
+    adapter_args: {},
     adapters: {},
     step_prompts: {
       first_agent: [],
@@ -30,6 +31,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
       review: [],
       pair: [],
     },
+    review_gate: true,
     ...overrides,
   };
 }
@@ -81,4 +83,20 @@ test("resolveGeminiStreamingCommand falls back to raw execution for explicit non
   });
 
   assert.equal(resolveGeminiStreamingCommand(config), null);
+});
+
+test("resolveGeminiStreamingCommand preserves adapter_args on the streaming path", () => {
+  const config = makeConfig({
+    adapter_args: {
+      gemini: ["--model", "gemini-2.5-pro"],
+    },
+  });
+
+  assert.deepEqual(resolveGeminiStreamingCommand(config), [
+    "gemini",
+    "--model",
+    "gemini-2.5-pro",
+    "-o",
+    "stream-json",
+  ]);
 });

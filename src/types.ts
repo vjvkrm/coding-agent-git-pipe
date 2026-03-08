@@ -27,8 +27,10 @@ export interface Config {
   log_dir: string;
   agent_timeouts_ms: Partial<Record<AgentName, number>>;
   adapter_modes: Partial<Record<AgentName, "print" | "auto">>;
+  adapter_args: Partial<Record<AgentName, string[]>>;
   adapters: Partial<Record<AgentName, string[]>>;
   step_prompts: Record<StepPromptScope, string[]>;
+  review_gate: boolean;
 }
 
 export interface InvokeAgentOptions {
@@ -40,8 +42,12 @@ export interface InvokeAgentOptions {
 }
 
 export interface HumanInputPayload {
+  heading?: string;
   message?: string;
   questions?: Question[];
+  footer?: string;
+  promptText?: string;
+  showMessage?: boolean;
 }
 
 export interface AdapterInvocation {

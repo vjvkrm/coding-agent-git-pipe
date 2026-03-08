@@ -13,10 +13,19 @@ export const AUTO_ADAPTER_COMMANDS: Record<AgentName, string[]> = {
   gemini: ["gemini"],
 };
 
+function applyAdapterArgs(commandParts: string[], config: Config, agentName: AgentName): string[] {
+  const extraArgs = config.adapter_args?.[agentName];
+  if (!Array.isArray(extraArgs) || extraArgs.length === 0) {
+    return commandParts;
+  }
+
+  return [...commandParts, ...extraArgs];
+}
+
 export function resolveAdapterCommand(agentName: AgentName, config: Config): string[] {
   const configured = config.adapters?.[agentName];
   if (Array.isArray(configured) && configured.length > 0) {
-    return configured;
+    return applyAdapterArgs(configured, config, agentName);
   }
 
   const mode = config.adapter_modes?.[agentName] || "auto";
@@ -29,10 +38,10 @@ export function resolveAdapterCommand(agentName: AgentName, config: Config): str
           `Use the "adapters" config field to provide a custom command, or use "auto" mode.`
       );
     }
-    return printCmd;
+    return applyAdapterArgs(printCmd, config, agentName);
   }
 
-  return AUTO_ADAPTER_COMMANDS[agentName];
+  return applyAdapterArgs(AUTO_ADAPTER_COMMANDS[agentName], config, agentName);
 }
 
 export function runAdapter(

@@ -37,6 +37,10 @@ Each agent thinks it's talking to a human. It's not. It's talking to another age
 # Install globally
 npm install -g coding-agent-git-pipe
 
+# Initialize a repo once
+cd /path/to/repo
+agent-pipe init
+
 # Or run directly with npx (no install needed)
 npx coding-agent-git-pipe run "implement JWT refresh token flow"
 
@@ -104,7 +108,20 @@ cagp --help
 
 ### CLI Commands
 
-The only command is `run`. Pass your task as a quoted string:
+Use `init` once per repo to create a starter config, then use `run` for actual tasks.
+
+```bash
+# Create .agentpipe.json in the current repo
+agent-pipe init
+
+# Create it in another repo root
+agent-pipe init --cwd /path/to/repo
+
+# Overwrite an existing config
+agent-pipe init --force
+```
+
+Then pass your task as a quoted string:
 
 ```bash
 # Basic usage
@@ -126,12 +143,13 @@ The orchestrator will:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--first-agent <name>` | `claude` | Which agent receives the initial task (`claude`, `codex`, or `gemini`) |
-| `--max-hops <n>` | `10` | Maximum routing hops before stopping |
+| `--max-hops <n>` | `20` | Maximum routing hops before stopping |
 | `--timeout-ms <n>` | `1800000` | Per-agent timeout in milliseconds (default: 30 min) |
 | `--max-retries <n>` | `1` | Contract parse retries before escalating to human |
 | `--no-progress-hops <n>` | `3` | Ask human if repo unchanged for N consecutive steps (0 = disabled) |
 | `--config <path>` | `.agentpipe.json` | Path to config JSON file |
 | `--cwd <path>` | Current dir | Working directory (must be a git repo) |
+| `--force` | | `init` only. Overwrite an existing config file |
 | `-v, --version` | | Show version |
 | `-h, --help` | | Show help |
 
@@ -235,6 +253,10 @@ The repo itself is shared state — agents read code directly from disk, not fro
 
 Create `.agentpipe.json` at your repo root (optional — all fields have sensible defaults):
 
+```bash
+agent-pipe init
+```
+
 ```json
 {
   "routing": {
@@ -245,15 +267,17 @@ Create `.agentpipe.json` at your repo root (optional — all fields have sensibl
     "ask-human": "human",
     "done": "stop"
   },
-  "max_hops": 10,
+  "max_hops": 20,
   "first_agent": "claude",
   "agent_timeout_ms": 1800000,
   "max_invalid_contract_retries": 1,
   "no_progress_hops": 3,
   "lock_file": ".agentpipe.lock",
   "log_dir": ".agentpipe/runs",
+  "review_gate": true,
   "agent_timeouts_ms": {},
   "adapter_modes": {},
+  "adapter_args": {},
   "adapters": {},
   "step_prompts": {
     "first_agent": [],
@@ -279,15 +303,17 @@ Add to your `.gitignore`:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `routing` | `Record<action, target>` | plan->claude, implement->codex, review->gemini, pair->claude | Maps actions to agents. Targets: `claude`, `codex`, `gemini`, `human`, `stop` |
-| `max_hops` | `number` | `10` | Max routing hops before stopping |
+| `max_hops` | `number` | `20` | Max routing hops before stopping |
 | `first_agent` | `string` | `"claude"` | Which agent receives the initial task |
 | `agent_timeout_ms` | `number` | `1800000` (30min) | Default per-agent timeout |
 | `max_invalid_contract_retries` | `number` | `1` | Retries for invalid contract output |
 | `no_progress_hops` | `number` | `3` | Ask human if repo unchanged for N hops (0 = disabled) |
 | `lock_file` | `string` | `".agentpipe.lock"` | Lock file path for concurrency protection |
 | `log_dir` | `string` | `".agentpipe/runs"` | JSONL log directory |
+| `review_gate` | `boolean` | `true` | If enabled, intercepts `implement -> done` and routes that completion through `review` first |
 | `agent_timeouts_ms` | `Record<agent, number>` | `{}` | Per-agent timeout overrides |
 | `adapter_modes` | `Record<agent, "print"\|"auto">` | `{}` (all default to `auto`) | Per-agent execution mode |
+| `adapter_args` | `Record<agent, string[]>` | `{}` | Extra CLI flags appended to the resolved adapter command |
 | `adapters` | `Record<agent, string[]>` | `{}` | Per-agent command override |
 | `step_prompts` | `Record<scope, string[]>` | all empty arrays | Hidden prompt instructions scoped to `first_agent`, `plan`, `implement`, `review`, or `pair` |
 
@@ -321,6 +347,23 @@ Example:
 - Pair hops use a separate thread namespace: `pair:<origin-scope>`. That keeps pair advice sessions separate from the invoking step's own session.
 - Built-in adapters reuse native CLI session ids when available. When a custom adapter cannot resume natively, `agent-pipe` falls back to prompt replay for continuity.
 - When a step resumes, the prompt only includes the new handoff plus turns since that thread last ran. Older context stays in the native CLI session instead of being replayed every time.
+
+### Better Handoffs
+
+Every agent prompt now includes a hidden handoff rubric.
+
+- Agents are told to treat the current handoff as primary task state.
+- When they route to another action, they are told to make `message` a concise technical handoff rather than a vague summary.
+- The intended shape is: current state or diagnosis, exact next task, and any relevant files, tests, commands, or constraints.
+- The handoff stays compact; this is meant to improve precision, not add long prose.
+
+### Review Gate
+
+By default, `agent-pipe` will not let an `implement` step finish the run directly.
+
+- If an `implement` step emits `done`, the orchestrator redirects that completion to the configured `review` route first.
+- A `review` step can still emit `done` normally.
+- Set `"review_gate": false` if you want to allow `implement -> done` without an automatic review hop.
 
 ### Adapter Modes
 
@@ -376,6 +419,22 @@ You can even swap in a completely different tool (e.g., aider) by routing to an 
 
 This routes "implement" actions to the "codex" slot but runs `aider` instead.
 
+Use `adapter_args` when you want to keep the built-in adapter behavior but add flags like model selection, sandbox, or permission settings.
+
+Examples:
+
+```json
+{
+  "adapter_args": {
+    "claude": ["--model", "opus", "--permission-mode", "auto"],
+    "codex": ["--full-auto", "-m", "gpt-5.4"],
+    "gemini": ["--model", "gemini-2.5-pro"]
+  }
+}
+```
+
+This is usually better than a full `adapters` override because built-in streaming and native session-resume behavior stay intact.
+
 ---
 
 ## Contract Schema
@@ -387,7 +446,7 @@ Every agent response must end with a JSON contract. This is how agents tell the 
   "contract_version": "1",
   "next_action": "plan | implement | review | pair | ask-human | done",
   "to": "(optional) plan | implement | review | pair | ask-human | done",
-  "message": "task/context for next step",
+  "message": "concise technical handoff for the next step",
   "questions": [{ "id": "q1", "text": "Only used when next_action=ask-human" }]
 }
 ```
@@ -397,7 +456,7 @@ Every agent response must end with a JSON contract. This is how agents tell the 
 | `contract_version` | Yes | Always `"1"` |
 | `next_action` | Yes | What should happen next |
 | `to` | No | Override routing (uses action names, not agent names) |
-| `message` | Yes | Context passed to the next step |
+| `message` | Yes | Concise technical handoff passed to the next step |
 | `questions` | Only for `ask-human` | Questions for the human to answer |
 
 **Important:** `to` uses action names (`plan`, `implement`, `review`, `pair`) — never agent names. The routing config maps actions to agents internally. This keeps agents unaware of each other.
@@ -468,13 +527,13 @@ A heartbeat message (`... still working`) appears every 10 seconds if an agent p
 Every run produces a detailed JSONL log at `.agentpipe/runs/{runId}.jsonl`. Each line is a timestamped JSON event:
 
 ```jsonl
-{"ts":"2026-03-05T10:00:00.000Z","run_id":"abc-123","type":"run_started","first_agent":"claude","max_hops":10}
+{"ts":"2026-03-05T10:00:00.000Z","run_id":"abc-123","type":"run_started","first_agent":"claude","max_hops":20}
 {"ts":"2026-03-05T10:00:00.100Z","run_id":"abc-123","type":"step_started","step_id":1,"agent":"claude"}
 {"ts":"2026-03-05T10:02:30.000Z","run_id":"abc-123","type":"step_contract","step_id":1,"contract":{...}}
 {"ts":"2026-03-05T10:05:00.000Z","run_id":"abc-123","type":"run_completed","status":"done"}
 ```
 
-Event types: `run_started`, `step_started`, `thread_session_started`, `thread_session_resumed`, `agent_invocation`, `contract_retry`, `contract_invalid`, `step_contract`, `step_failed`, `routing_failed`, `human_response`, `no_progress_check`, `pair_invoked`, `pair_return`, `done_gate_opened`, `done_gate_finish`, `done_gate_continue`, `run_completed`, `signal`, `run_finalized`.
+Event types: `run_started`, `step_started`, `thread_session_started`, `thread_session_resumed`, `agent_invocation`, `contract_retry`, `contract_invalid`, `step_contract`, `step_failed`, `routing_failed`, `human_response`, `no_progress_check`, `pair_invoked`, `pair_return`, `review_gate_redirect`, `done_gate_opened`, `done_gate_finish`, `done_gate_continue`, `run_completed`, `signal`, `run_finalized`.
 
 ---
 

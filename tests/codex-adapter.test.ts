@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeCodexJsonOutput, resolveCodexStreamingCommand } from "../src/adapters/codex";
+import {
+  normalizeCodexJsonOutput,
+  resolveCodexResumeCommand,
+  resolveCodexStreamingCommand,
+} from "../src/adapters/codex";
 import { Config } from "../src/types";
 
 function makeConfig(overrides: Partial<Config> = {}): Config {
@@ -22,6 +26,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
     log_dir: ".agentpipe/runs",
     agent_timeouts_ms: {},
     adapter_modes: {},
+    adapter_args: {},
     adapters: {},
     step_prompts: {
       first_agent: [],
@@ -30,6 +35,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
       review: [],
       pair: [],
     },
+    review_gate: true,
     ...overrides,
   };
 }
@@ -90,4 +96,45 @@ test("resolveCodexStreamingCommand falls back to raw execution for non-codex wra
   });
 
   assert.equal(resolveCodexStreamingCommand(config), null);
+});
+
+test("resolveCodexStreamingCommand preserves adapter_args on the JSON streaming path", () => {
+  const config = makeConfig({
+    adapter_args: {
+      codex: ["--full-auto", "-m", "gpt-5.4"],
+    },
+  });
+
+  assert.deepEqual(resolveCodexStreamingCommand(config), [
+    "codex",
+    "exec",
+    "--skip-git-repo-check",
+    "-c",
+    'model_reasoning_effort="medium"',
+    "--full-auto",
+    "-m",
+    "gpt-5.4",
+    "--json",
+  ]);
+});
+
+test("resolveCodexResumeCommand preserves adapter_args on resume", () => {
+  const config = makeConfig({
+    adapter_args: {
+      codex: ["--full-auto", "-m", "gpt-5.4"],
+    },
+  });
+
+  assert.deepEqual(resolveCodexResumeCommand(config, "session-123"), [
+    "codex",
+    "exec",
+    "resume",
+    "session-123",
+    "--skip-git-repo-check",
+    "-c",
+    'model_reasoning_effort="medium"',
+    "--full-auto",
+    "-m",
+    "gpt-5.4",
+  ]);
 });

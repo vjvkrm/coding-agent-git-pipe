@@ -1,19 +1,23 @@
 {
   "routing": {
     "plan": "codex",
-    "implement": "claude",
+    "implement": "codex",
     "review": "gemini",
     "pair": "codex",
     "ask-human": "human",
     "done": "stop"
   },
   "first_agent": "codex",
-  "max_hops": 5,
+  "max_hops": 20,
   "agent_timeout_ms": 1800000,
   "max_invalid_contract_retries": 1,
   "no_progress_hops": 0,
   "lock_file": ".agentpipe.lock",
   "log_dir": ".agentpipe/runs",
+  "adapter_args": {
+    "codex": ["--full-auto"],
+    "gemini": ["--approval-mode", "auto_edit"]
+  },
   "step_prompts": {
     "first_agent": [],
     "plan": [],

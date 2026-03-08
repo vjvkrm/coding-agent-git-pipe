@@ -11,6 +11,7 @@ import {
   AgentName,
   Config,
   Contract,
+  HumanInputPayload,
   NextAction,
   OrchestratorResult,
   RunInput,
@@ -20,13 +21,16 @@ import {
 
 export const CONTRACT_SUFFIX = [
   "---",
+  "When handing off to another action, make the `message` field a concise technical handoff.",
+  "Include the current state or diagnosis, the exact next task, and any relevant files, tests, commands, or constraints.",
+  "Keep it specific and compact. Avoid vague summaries.",
   "You must end your response with exactly one JSON block and no text after it:",
   "```json",
   "{",
   '  "contract_version": "1",',
   '  "next_action": "plan | implement | review | pair | ask-human | done",',
   '  "to": "(optional) plan | implement | review | pair | ask-human | done",',
-  '  "message": "task/context for next step",',
+  '  "message": "concise technical handoff for the next step",',
   '  "questions": [{"id":"q1","text":"Only for ask-human"}]',
   "}",
   "```",
@@ -88,6 +92,15 @@ function buildPromptBody(params: {
       ].join("\n")
     );
   }
+
+  sections.push(
+    [
+      "Technical handoff rules:",
+      "- Treat the current handoff as the primary continuation state for this step.",
+      "- If you route again, make `message` a concise technical handoff with current state/diagnosis, exact next task, and relevant files/tests/constraints.",
+      "- Keep the handoff compact and specific.",
+    ].join("\n")
+  );
 
   sections.push(`Current handoff from ${params.speaker}:\n${params.message}`);
 
@@ -187,11 +200,20 @@ function getOrCreateThreadState(
 
 class ContractAcquisitionError extends Error {
   sessionRef: string | null;
+  humanInputPayload: HumanInputPayload | null;
+  directHumanRequest: string | null;
 
-  constructor(message: string, sessionRef: string | null) {
+  constructor(
+    message: string,
+    sessionRef: string | null,
+    humanInputPayload: HumanInputPayload | null = null,
+    directHumanRequest: string | null = null
+  ) {
     super(message);
     this.name = "ContractAcquisitionError";
     this.sessionRef = sessionRef;
+    this.humanInputPayload = humanInputPayload;
+    this.directHumanRequest = directHumanRequest;
   }
 }
 
@@ -209,6 +231,40 @@ function clipText(value: string, max = 3000): string {
     return value;
   }
   return `${value.slice(0, max)}...[truncated]`;
+}
+
+function formatAgentLabel(agent: AgentName): string {
+  return agent.charAt(0).toUpperCase() + agent.slice(1);
+}
+
+function looksLikeDirectHumanRequest(text: string): boolean {
+  if (!text.includes("?")) {
+    return /(need|needs|needed|require|requires|required|clarif|confirm|choose|pick|decide|specify|provide)/i.test(text);
+  }
+
+  return true;
+}
+
+function buildDirectHumanRequestPayload(agent: AgentName, output: string): HumanInputPayload | null {
+  const trimmed = output.trim();
+  if (trimmed === "" || !looksLikeDirectHumanRequest(trimmed)) {
+    return null;
+  }
+
+  return {
+    message:
+      `${formatAgentLabel(agent)} asked the human a direct follow-up instead of returning an ` +
+      `\`ask-human\` contract. Reply below and the same session will resume.\n\n${clipText(trimmed, 1200)}`,
+  };
+}
+
+function extractDirectHumanRequest(output: string): string | null {
+  const trimmed = output.trim();
+  if (trimmed === "" || !looksLikeDirectHumanRequest(trimmed)) {
+    return null;
+  }
+
+  return clipText(trimmed, 1200);
 }
 
 export function createPrefixedWriter(
@@ -239,6 +295,18 @@ export function createPrefixedWriter(
   };
 }
 
+export function formatTerminalPrefix(
+  agent: AgentName,
+  stepScope: StepPromptScope,
+  stream: "stdout" | "stderr" = "stdout"
+): string {
+  if (stream === "stderr") {
+    return `[${agent}][${stepScope}][stderr] `;
+  }
+
+  return `[${agent}][${stepScope}] `;
+}
+
 function parseAndValidate(output: string): Contract {
   const parsed = parseContractOutput(output);
   return validateContract(parsed);
@@ -246,6 +314,7 @@ function parseAndValidate(output: string): Contract {
 
 async function getContractWithRetry(params: {
   agent: AgentName;
+  stepScope: StepPromptScope;
   message: string;
   sessionRef: string | null;
   config: Config;
@@ -258,6 +327,7 @@ async function getContractWithRetry(params: {
 }): Promise<{ contract: Contract; attempts: number; sessionRef: string | null }> {
   const {
     agent,
+    stepScope,
     message,
     sessionRef,
     config,
@@ -273,6 +343,8 @@ async function getContractWithRetry(params: {
   let promptMessage = message;
   let currentSessionRef = sessionRef;
   let lastError = new Error("Unknown contract parsing error");
+  let humanInputPayload: HumanInputPayload | null = null;
+  let directHumanRequest: string | null = null;
 
   for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
     if (attempt > 1) {
@@ -285,8 +357,11 @@ async function getContractWithRetry(params: {
       });
     }
 
-    const writeStdout = createPrefixedWriter(process.stdout, `[${agent}] `);
-    const writeStderr = createPrefixedWriter(process.stderr, `[${agent}:stderr] `);
+    const writeStdout = createPrefixedWriter(process.stdout, formatTerminalPrefix(agent, stepScope));
+    const writeStderr = createPrefixedWriter(
+      process.stderr,
+      formatTerminalPrefix(agent, stepScope, "stderr")
+    );
     let lastOutputAt = Date.now();
     const heartbeatId = setInterval(() => {
       const idleMs = Date.now() - lastOutputAt;
@@ -294,7 +369,9 @@ async function getContractWithRetry(params: {
         return;
       }
 
-      process.stdout.write(`\n[${agent}] ... still working (${Math.floor(idleMs / 1000)}s idle)\n`);
+      process.stdout.write(
+        `\n${formatTerminalPrefix(agent, stepScope).trimEnd()} ... still working (${Math.floor(idleMs / 1000)}s idle)\n`
+      );
     }, AGENT_HEARTBEAT_MS);
 
     const invocation = await (async () => {
@@ -359,12 +436,22 @@ async function getContractWithRetry(params: {
       error: lastError.message,
       stdout_sample: clipText(invocation.stdout),
     });
+    humanInputPayload =
+      buildDirectHumanRequestPayload(agent, invocation.stdout) ||
+      buildDirectHumanRequestPayload(agent, invocation.combined) ||
+      humanInputPayload;
+    directHumanRequest =
+      extractDirectHumanRequest(invocation.stdout) ||
+      extractDirectHumanRequest(invocation.combined) ||
+      directHumanRequest;
     promptMessage = buildRetryMessage(message, lastError.message);
   }
 
   throw new ContractAcquisitionError(
     `Contract parse/validation failed after ${totalAttempts} attempt(s): ${lastError.message}`,
-    currentSessionRef
+    currentSessionRef,
+    humanInputPayload,
+    directHumanRequest
   );
 }
 
@@ -461,11 +548,14 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
       const stepId = hopCount + 1;
       activeStepId = stepId;
       const timeoutMs = resolveTimeoutMs(currentAgent, config, timeoutOverrideMs);
-      console.log(`\n=== step ${stepId} | agent: ${currentAgent} | timeout_ms: ${timeoutMs} ===`);
+      console.log(
+        `\n=== step ${stepId} | agent: ${currentAgent} | stage: ${currentStepPromptScope} | timeout_ms: ${timeoutMs} ===`
+      );
       logger.logEvent({
         type: "step_started",
         step_id: stepId,
         agent: currentAgent,
+        step_scope: currentStepPromptScope,
         timeout_ms: timeoutMs,
         message: clipText(currentMessage),
       });
@@ -501,6 +591,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
       try {
         const result = await getContractWithRetry({
           agent: currentAgent,
+          stepScope: currentStepPromptScope,
           message: promptMessage,
           sessionRef: threadState.sessionRef,
           config,
@@ -527,9 +618,15 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
           error: (error as Error).message,
         });
 
-        const humanResponse = await askHumanInputFn({
-          message: `Agent invocation/contract failed for ${currentAgent}: ${(error as Error).message}\nProvide next instruction for ${currentAgent}.`,
-        });
+        const contractFailurePayload =
+          error instanceof ContractAcquisitionError && error.humanInputPayload
+            ? error.humanInputPayload
+            : {
+                message:
+                  `Agent invocation/contract failed for ${currentAgent}: ${(error as Error).message}\n` +
+                  `Provide next instruction for ${currentAgent}.`,
+              };
+        const humanResponse = await askHumanInputFn(contractFailurePayload);
 
         if (humanResponse === "") {
           throw new Error("No human input provided after failure; stopping run");
@@ -538,9 +635,15 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
         logger.logEvent({
           type: "human_response",
           step_id: stepId,
-          reason: "agent-failure",
+          reason:
+            error instanceof ContractAcquisitionError && error.humanInputPayload
+              ? "agent-direct-human-request"
+              : "agent-failure",
           response: clipText(humanResponse),
         });
+        if (error instanceof ContractAcquisitionError && error.directHumanRequest) {
+          appendConversationTurn(conversationHistory, currentAgent, error.directHumanRequest);
+        }
         appendConversationTurn(conversationHistory, "human", humanResponse);
         currentMessage = humanResponse;
         currentMessageSpeaker = "human";
@@ -594,10 +697,30 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
         target,
       });
       const handoffSpeaker = currentAgent;
-      const routedAction = contract.to || contract.next_action;
-      const nextStepPromptScope: StepPromptScope =
+      let routedAction = (contract.to || contract.next_action) as NextAction;
+      let nextStepPromptScope: StepPromptScope =
         resolveStepPromptScope(routedAction) || currentStepPromptScope;
-      const nextThreadKey = resolveNextThreadKey(routedAction, currentThreadKey);
+      let nextThreadKey = resolveNextThreadKey(routedAction, currentThreadKey);
+
+      // --- Review gate: intercept implement→done and redirect to review ---
+      if (
+        config.review_gate &&
+        routedAction === "done" &&
+        currentStepPromptScope === "implement"
+      ) {
+        console.log(`\n[review-gate] implement→done intercepted; redirecting to review`);
+        logger.logEvent({
+          type: "review_gate_redirect",
+          step_id: stepId,
+          agent: currentAgent,
+          original_action: "done",
+          redirected_to: "review",
+        });
+        routedAction = "review";
+        target = config.routing.review;
+        nextStepPromptScope = "review";
+        nextThreadKey = resolveNextThreadKey("review", currentThreadKey);
+      }
 
       if (target !== "stop" || routedAction === "done") {
         appendConversationTurn(conversationHistory, handoffSpeaker, contract.message);
@@ -633,9 +756,12 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
           });
 
           const decision = await askHumanInputFn({
-            message:
-              `${contract.message}\n\n` +
-              'Reply with "finish" to end the run, "continue" to continue with the same agent session, or enter a follow-up message/question directly to continue with the same agent session.',
+            heading: "=== human response awaited ===",
+            message: contract.message,
+            showMessage: false,
+            footer:
+              'Reply with "finish" to end the run, or enter a follow-up message/question directly to continue with the same agent session.',
+            promptText: "human response awaited> ",
           });
 
           if (decision === "") {
@@ -669,9 +795,10 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
           let followUp = decision;
           if (normalizedDecision === "continue") {
             followUp = await askHumanInputFn({
-              message:
-                `Continuing with ${currentAgent} on the same saved session.\n` +
-                "Enter the follow-up message or question for that agent.",
+              heading: "=== human response awaited ===",
+              showMessage: false,
+              footer: "Enter the follow-up message or question for that agent.",
+              promptText: "human response awaited> ",
             });
 
             if (followUp === "") {
@@ -712,8 +839,11 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
 
       if (target === "human") {
         const response = await askHumanInputFn({
+          heading: "=== human response awaited ===",
           message: contract.message,
           questions: contract.questions,
+          showMessage: false,
+          promptText: "human response awaited> ",
         });
 
         if (response === "") {

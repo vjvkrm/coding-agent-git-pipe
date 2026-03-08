@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createPrefixedWriter } from "../src/orchestrator";
+import { createPrefixedWriter, formatTerminalPrefix } from "../src/orchestrator";
 
 test("createPrefixedWriter prefixes each logical line once", () => {
   let written = "";
@@ -17,4 +17,9 @@ test("createPrefixedWriter prefixes each logical line once", () => {
   write(" line\n");
 
   assert.equal(written, "[claude] Hello world\n[claude] Next line\n");
+});
+
+test("formatTerminalPrefix includes both agent and step scope", () => {
+  assert.equal(formatTerminalPrefix("codex", "plan"), "[codex][plan] ");
+  assert.equal(formatTerminalPrefix("claude", "pair", "stderr"), "[claude][pair][stderr] ");
 });

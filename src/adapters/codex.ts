@@ -58,25 +58,21 @@ function isCodexCliCommand(commandParts: string[]): boolean {
 }
 
 export function resolveCodexStreamingCommand(config: Config): string[] | null {
-  const configured = config.adapters?.codex;
-  if (Array.isArray(configured) && configured.length > 0) {
-    if (!isCodexCliCommand(configured)) {
-      return null;
-    }
-
-    return configured.includes("--json") ? configured : [...configured, ...CODEX_STREAM_ARGS];
-  }
-
-  return [...resolveAdapterCommand("codex", config), ...CODEX_STREAM_ARGS];
-}
-
-function resolveCodexResumeCommand(config: Config, sessionRef: string): string[] | null {
-  const configured = config.adapters?.codex;
-  if (Array.isArray(configured) && configured.length > 0) {
+  const commandParts = resolveAdapterCommand("codex", config);
+  if (!isCodexCliCommand(commandParts)) {
     return null;
   }
 
-  return ["codex", "exec", "resume", sessionRef];
+  return commandParts.includes("--json") ? commandParts : [...commandParts, ...CODEX_STREAM_ARGS];
+}
+
+export function resolveCodexResumeCommand(config: Config, sessionRef: string): string[] | null {
+  const commandParts = resolveAdapterCommand("codex", config);
+  if (!isCodexCliCommand(commandParts) || commandParts[1] !== "exec") {
+    return null;
+  }
+
+  return [commandParts[0], "exec", "resume", sessionRef, ...commandParts.slice(2)];
 }
 
 export function invokeCodex(

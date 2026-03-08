@@ -16,11 +16,18 @@ function askLine(promptText: string): Promise<string> {
 }
 
 export async function askHumanInput(payload: HumanInputPayload): Promise<string> {
+  const heading = payload.heading || "=== human gate ===";
   const message = payload.message || "Agent requested human input.";
   const questions = Array.isArray(payload.questions) ? payload.questions : [];
+  const footer = typeof payload.footer === "string" ? payload.footer : "";
+  const promptText = payload.promptText || "human> ";
+  const showMessage = payload.showMessage !== false;
 
-  console.log("\n=== human gate ===");
-  console.log(message);
+  console.log(`\n${heading}`);
+
+  if (showMessage) {
+    console.log(message);
+  }
 
   if (questions.length > 0) {
     console.log("");
@@ -29,8 +36,11 @@ export async function askHumanInput(payload: HumanInputPayload): Promise<string>
     }
   }
 
+  if (footer !== "") {
+    console.log("");
+    console.log(footer);
+  }
+
   console.log("");
-  console.log("Any non-empty reply continues the run. If the orchestrator offers finish/continue, a direct message continues with the same saved session.");
-  console.log("");
-  return askLine("human> ");
+  return askLine(promptText);
 }
