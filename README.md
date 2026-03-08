@@ -99,10 +99,26 @@ flowchart LR
 
 For architecture details, programmatic usage, and internal APIs, see [API.md](./API.md).
 
+## Contributing
+
+Contributions are welcome.
+
+- Start with [`CONTRIBUTING.md`](./CONTRIBUTING.md) for setup, workflow, testing, and repo conventions.
+- Keep changes focused and update docs when behavior changes.
+- Open an issue first for larger changes, routing changes, or new adapter ideas so the approach can be aligned before implementation.
+
+## Issues and feature requests
+
+- Use GitHub Issues to report bugs, propose features, or ask for help with routing and adapter behavior.
+- Include your `agent-pipe` version, the command you ran, relevant `.agentpipe.json` snippets, and any useful logs from `.agentpipe/runs/`.
+- If a run failed because of contract parsing or handoff behavior, include the final JSON block and which agent produced it.
+
 ## Table of Contents
 
 - [Quick Start](#quick-start)
 - [Prerequisites](#prerequisites)
+- [Contributing](#contributing)
+- [Issues and feature requests](#issues-and-feature-requests)
 - [Installation](#installation)
 - [Usage](#usage)
   - [CLI Commands](#cli-commands)
