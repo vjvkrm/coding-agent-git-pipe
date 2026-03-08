@@ -2,7 +2,7 @@
 
 # 🔀 agent-pipe
 
-### Multi-agent peer review for AI coding CLIs
+### A tiny CLI that lets 🧠 Claude, ⚡ Codex, and 🔍 Gemini collaborate 🤝 like a real engineering team.
 
 **Plan with one mind. Implement with another. Review with a third.**
 
@@ -57,25 +57,25 @@ It works by orchestrating real autonomous coding CLIs (Claude Code, Codex, Gemin
 
 ### ⚡ What you get
 
-| | Benefit | How |
-|---|---|---|
-| 🔀 | **Cross-model peer review** | A different model always reviews — catching blind spots the author can't see |
-| 🧠 | **Right model for the right job** | Route planning to deep reasoners, implementation to fast coders, review to fresh eyes |
-| 💰 | **Cost-aware routing** | Spend expensive tokens on reasoning, use high-throughput models for heavy lifting |
-| 🔗 | **Automatic handoffs** | No more copy-pasting between tools — structured context flows between agents |
-| 🧵 | **Session continuity** | `implement → review → implement` resumes where it left off, not from scratch |
-| 🛡️ | **Built-in guardrails** | Review gate, lock file, no-progress detection, and JSONL audit logs |
-| 🔌 | **Vendor-agnostic** | Routing is action-based (`plan`, `implement`, `review`) — swap models without changing workflows |
-| 🖥️ | **Terminal-first** | No IDE lock-in. Works anywhere you have a terminal |
+|     | Benefit                           | How                                                                                              |
+| --- | --------------------------------- | ------------------------------------------------------------------------------------------------ |
+| 🔀  | **Cross-model peer review**       | A different model always reviews — catching blind spots the author can't see                     |
+| 🧠  | **Right model for the right job** | Route planning to deep reasoners, implementation to fast coders, review to fresh eyes            |
+| 💰  | **Cost-aware routing**            | Spend expensive tokens on reasoning, use high-throughput models for heavy lifting                |
+| 🔗  | **Automatic handoffs**            | No more copy-pasting between tools — structured context flows between agents                     |
+| 🧵  | **Session continuity**            | `implement → review → implement` resumes where it left off, not from scratch                     |
+| 🛡️  | **Built-in guardrails**           | Review gate, lock file, no-progress detection, and JSONL audit logs                              |
+| 🔌  | **Vendor-agnostic**               | Routing is action-based (`plan`, `implement`, `review`) — swap models without changing workflows |
+| 🖥️  | **Terminal-first**                | No IDE lock-in. Works anywhere you have a terminal                                               |
 
 ### 🏗️ How it's different
 
-| | What it's NOT | What it IS |
-|---|---|---|
-| ❌ | A prompt wrapper over one model | ✅ Coordination of independent, autonomous CLI agents |
-| ❌ | A massive workflow engine | ✅ A tiny contract, explicit routing, predictable handoffs |
-| ❌ | Locked to one vendor | ✅ Action-based routing with swappable adapters |
-| ❌ | An IDE plugin | ✅ A terminal-native pipe between real coding CLIs |
+|     | What it's NOT                   | What it IS                                                 |
+| --- | ------------------------------- | ---------------------------------------------------------- |
+| ❌  | A prompt wrapper over one model | ✅ Coordination of independent, autonomous CLI agents      |
+| ❌  | A massive workflow engine       | ✅ A tiny contract, explicit routing, predictable handoffs |
+| ❌  | Locked to one vendor            | ✅ Action-based routing with swappable adapters            |
+| ❌  | An IDE plugin                   | ✅ A terminal-native pipe between real coding CLIs         |
 
 ```mermaid
 flowchart LR
@@ -170,11 +170,11 @@ That's it. The orchestrator will route your task through Claude (plan) -> Codex 
 
 You need at least one of the following AI coding CLIs installed and authenticated:
 
-| Agent | Install | Auth |
-|-------|---------|------|
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `npm install -g @anthropic-ai/claude-code` | `claude` (follow login prompts) |
-| [Codex](https://github.com/openai/codex) | `npm install -g @openai/codex` | Set `OPENAI_API_KEY` env var |
-| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `npm install -g @google/gemini-cli` or see [Gemini CLI docs](https://github.com/google-gemini/gemini-cli) | `gemini` (follow login prompts) |
+| Agent                                                         | Install                                                                                                   | Auth                            |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `npm install -g @anthropic-ai/claude-code`                                                                | `claude` (follow login prompts) |
+| [Codex](https://github.com/openai/codex)                      | `npm install -g @openai/codex`                                                                            | Set `OPENAI_API_KEY` env var    |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli)     | `npm install -g @google/gemini-cli` or see [Gemini CLI docs](https://github.com/google-gemini/gemini-cli) | `gemini` (follow login prompts) |
 
 You do **not** need all three. See [Using With Fewer Agents](#using-with-fewer-agents) to configure routing for your setup.
 
@@ -243,6 +243,7 @@ agent-pipe run "add user authentication with OAuth2"
 ```
 
 The orchestrator will:
+
 1. Send your task to the first agent (Claude by default)
 2. Stream the agent's output to your terminal in real time
 3. Parse the agent's routing contract
@@ -251,18 +252,18 @@ The orchestrator will:
 
 ### CLI Flags
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--first-agent <name>` | `claude` | Which agent receives the initial task (`claude`, `codex`, or `gemini`) |
-| `--max-hops <n>` | `20` | Maximum routing hops before stopping |
-| `--timeout-ms <n>` | `1800000` | Per-agent timeout in milliseconds (default: 30 min) |
-| `--max-retries <n>` | `1` | Contract parse retries before escalating to human |
-| `--no-progress-hops <n>` | `3` | Ask human if repo unchanged for N consecutive steps (0 = disabled) |
-| `--config <path>` | `.agentpipe.json` | Path to config JSON file |
-| `--cwd <path>` | Current dir | Working directory (must be a git repo) |
-| `--force` | | `init` only. Overwrite an existing config file |
-| `-v, --version` | | Show version |
-| `-h, --help` | | Show help |
+| Flag                     | Default           | Description                                                            |
+| ------------------------ | ----------------- | ---------------------------------------------------------------------- |
+| `--first-agent <name>`   | `claude`          | Which agent receives the initial task (`claude`, `codex`, or `gemini`) |
+| `--max-hops <n>`         | `20`              | Maximum routing hops before stopping                                   |
+| `--timeout-ms <n>`       | `1800000`         | Per-agent timeout in milliseconds (default: 30 min)                    |
+| `--max-retries <n>`      | `1`               | Contract parse retries before escalating to human                      |
+| `--no-progress-hops <n>` | `3`               | Ask human if repo unchanged for N consecutive steps (0 = disabled)     |
+| `--config <path>`        | `.agentpipe.json` | Path to config JSON file                                               |
+| `--cwd <path>`           | Current dir       | Working directory (must be a git repo)                                 |
+| `--force`                |                   | `init` only. Overwrite an existing config file                         |
+| `-v, --version`          |                   | Show version                                                           |
+| `-h, --help`             |                   | Show help                                                              |
 
 ### Examples
 
@@ -349,6 +350,7 @@ You come back to a reviewed implementation.
 ```
 
 In `auto` mode (default), each agent:
+
 - Reads and writes files in the repo directly
 - Runs commands (tests, linters, builds)
 - Commits code if needed
@@ -411,22 +413,22 @@ Add to your `.gitignore`:
 
 ### Config Reference
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `routing` | `Record<action, target>` | plan->claude, implement->codex, review->gemini, pair->claude | Maps actions to agents. Targets: `claude`, `codex`, `gemini`, `human`, `stop` |
-| `max_hops` | `number` | `20` | Max routing hops before stopping |
-| `first_agent` | `string` | `"claude"` | Which agent receives the initial task |
-| `agent_timeout_ms` | `number` | `1800000` (30min) | Default per-agent timeout |
-| `max_invalid_contract_retries` | `number` | `1` | Retries for invalid contract output |
-| `no_progress_hops` | `number` | `3` | Ask human if repo unchanged for N hops (0 = disabled) |
-| `lock_file` | `string` | `".agentpipe.lock"` | Lock file path for concurrency protection |
-| `log_dir` | `string` | `".agentpipe/runs"` | JSONL log directory |
-| `review_gate` | `boolean` | `true` | If enabled, intercepts `implement -> done` and routes that completion through `review` first |
-| `agent_timeouts_ms` | `Record<agent, number>` | `{}` | Per-agent timeout overrides |
-| `adapter_modes` | `Record<agent, "print"\|"auto">` | `{}` (all default to `auto`) | Per-agent execution mode |
-| `adapter_args` | `Record<agent, string[]>` | `{}` | Extra CLI flags appended to the resolved adapter command |
-| `adapters` | `Record<agent, string[]>` | `{}` | Per-agent command override |
-| `step_prompts` | `Record<scope, string[]>` | all empty arrays | Hidden prompt instructions scoped to `first_agent`, `plan`, `implement`, `review`, or `pair` |
+| Field                          | Type                             | Default                                                      | Description                                                                                  |
+| ------------------------------ | -------------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| `routing`                      | `Record<action, target>`         | plan->claude, implement->codex, review->gemini, pair->claude | Maps actions to agents. Targets: `claude`, `codex`, `gemini`, `human`, `stop`                |
+| `max_hops`                     | `number`                         | `20`                                                         | Max routing hops before stopping                                                             |
+| `first_agent`                  | `string`                         | `"claude"`                                                   | Which agent receives the initial task                                                        |
+| `agent_timeout_ms`             | `number`                         | `1800000` (30min)                                            | Default per-agent timeout                                                                    |
+| `max_invalid_contract_retries` | `number`                         | `1`                                                          | Retries for invalid contract output                                                          |
+| `no_progress_hops`             | `number`                         | `3`                                                          | Ask human if repo unchanged for N hops (0 = disabled)                                        |
+| `lock_file`                    | `string`                         | `".agentpipe.lock"`                                          | Lock file path for concurrency protection                                                    |
+| `log_dir`                      | `string`                         | `".agentpipe/runs"`                                          | JSONL log directory                                                                          |
+| `review_gate`                  | `boolean`                        | `true`                                                       | If enabled, intercepts `implement -> done` and routes that completion through `review` first |
+| `agent_timeouts_ms`            | `Record<agent, number>`          | `{}`                                                         | Per-agent timeout overrides                                                                  |
+| `adapter_modes`                | `Record<agent, "print"\|"auto">` | `{}` (all default to `auto`)                                 | Per-agent execution mode                                                                     |
+| `adapter_args`                 | `Record<agent, string[]>`        | `{}`                                                         | Extra CLI flags appended to the resolved adapter command                                     |
+| `adapters`                     | `Record<agent, string[]>`        | `{}`                                                         | Per-agent command override                                                                   |
+| `step_prompts`                 | `Record<scope, string[]>`        | all empty arrays                                             | Hidden prompt instructions scoped to `first_agent`, `plan`, `implement`, `review`, or `pair` |
 
 ### Step Prompts
 
@@ -441,11 +443,17 @@ Example:
 ```json
 {
   "step_prompts": {
-    "first_agent": ["Analyze first. Route intentionally. Do not implement immediately."],
-    "plan": ["Planning only. Prefer decomposition and routing over code edits."],
+    "first_agent": [
+      "Analyze first. Route intentionally. Do not implement immediately."
+    ],
+    "plan": [
+      "Planning only. Prefer decomposition and routing over code edits."
+    ],
     "implement": ["Focus on concrete repo changes and validation."],
     "review": ["Review for correctness, regressions, and missing tests."],
-    "pair": ["Provide expert advice, suggestions, and approach validation. Do not modify code."]
+    "pair": [
+      "Provide expert advice, suggestions, and approach validation. Do not modify code."
+    ]
   }
 }
 ```
@@ -480,18 +488,18 @@ By default, `agent-pipe` will not let an `implement` step finish the run directl
 
 Each agent can run in one of two modes:
 
-| Mode | Behavior |
-|------|----------|
+| Mode             | Behavior                                                             |
+| ---------------- | -------------------------------------------------------------------- |
 | `auto` (default) | Full autonomous agent with file editing, command execution, tool use |
-| `print` | Text-only output, no tool use or file modifications |
+| `print`          | Text-only output, no tool use or file modifications                  |
 
 The actual commands invoked per mode:
 
-| Agent | `auto` | `print` |
-|-------|--------|---------|
-| claude | `claude --dangerously-skip-permissions -p` | `claude -p --tools ""` |
-| codex | `codex exec --skip-git-repo-check --json ...` | Not supported (use `adapters` override) |
-| gemini | `gemini -o stream-json` | Not supported (use `adapters` override) |
+| Agent  | `auto`                                        | `print`                                 |
+| ------ | --------------------------------------------- | --------------------------------------- |
+| claude | `claude --dangerously-skip-permissions -p`    | `claude -p --tools ""`                  |
+| codex  | `codex exec --skip-git-repo-check --json ...` | Not supported (use `adapters` override) |
+| gemini | `gemini -o stream-json`                       | Not supported (use `adapters` override) |
 
 Set `"print"` for Claude when you only want text output (e.g., for planning-only steps):
 
@@ -562,13 +570,13 @@ Every agent response must end with a JSON contract. This is how agents tell the 
 }
 ```
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `contract_version` | Yes | Always `"1"` |
-| `next_action` | Yes | What should happen next |
-| `to` | No | Override routing (uses action names, not agent names) |
-| `message` | Yes | Concise technical handoff passed to the next step |
-| `questions` | Only for `ask-human` | Questions for the human to answer |
+| Field              | Required             | Description                                           |
+| ------------------ | -------------------- | ----------------------------------------------------- |
+| `contract_version` | Yes                  | Always `"1"`                                          |
+| `next_action`      | Yes                  | What should happen next                               |
+| `to`               | No                   | Override routing (uses action names, not agent names) |
+| `message`          | Yes                  | Concise technical handoff passed to the next step     |
+| `questions`        | Only for `ask-human` | Questions for the human to answer                     |
 
 **Important:** `to` uses action names (`plan`, `implement`, `review`, `pair`) — never agent names. The routing config maps actions to agents internally. This keeps routing action-based instead of model-specific.
 
@@ -764,7 +772,7 @@ const result = await runOrchestrator({
 });
 
 console.log(result.status); // "done" | "max-hops"
-console.log(result.hops);   // number of steps taken
+console.log(result.hops); // number of steps taken
 ```
 
 ---
