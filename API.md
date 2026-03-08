@@ -279,6 +279,26 @@ interface Config {
 }
 ```
 
+Supporting types used by `Config`:
+
+```typescript
+type AgentName = "claude" | "codex" | "gemini";
+type TargetName = AgentName | "human" | "stop";
+type NextAction = "plan" | "implement" | "review" | "pair" | "ask-human" | "done";
+type StepPromptScope = "first_agent" | "plan" | "implement" | "review" | "pair";
+```
+
+Validation summary:
+
+- `routing` keys must be valid `NextAction` values and targets must be valid `TargetName` values
+- `max_hops` and `agent_timeout_ms` must be positive integers
+- `max_invalid_contract_retries` and `no_progress_hops` must be non-negative integers
+- `agent_timeouts_ms` may only contain agent keys and positive integer timeout values
+- `adapter_modes` may only contain agent keys and `"auto"` or `"print"` values
+- `adapter_args` and `adapters` may only contain agent keys and arrays of non-empty strings
+- `step_prompts` may only contain `StepPromptScope` keys and arrays of non-empty strings
+- `review_gate` must be a boolean
+
 ### `loadConfig`
 
 ```typescript
@@ -298,12 +318,17 @@ Loads and validates `.agentpipe.json`. Deep-merges user config over defaults. If
 | `routing.implement` | `"codex"` |
 | `routing.review` | `"gemini"` |
 | `routing.pair` | `"claude"` |
+| `routing.ask-human` | `"human"` |
+| `routing.done` | `"stop"` |
 | `max_hops` | `20` |
 | `first_agent` | `"claude"` |
 | `agent_timeout_ms` | `1800000` (30 min) |
 | `max_invalid_contract_retries` | `1` |
 | `no_progress_hops` | `3` |
+| `lock_file` | `".agentpipe.lock"` |
+| `log_dir` | `".agentpipe/runs"` |
 | `review_gate` | `true` |
+| `agent_timeouts_ms` | `{}` |
 | `adapter_modes` | `{}` (all agents default to `"auto"`) |
 | `adapter_args` | `{}` (extra CLI flags appended to the resolved adapter command) |
 | `adapters` | `{}` (uses mode-based defaults) |
@@ -390,9 +415,17 @@ Agents produce text-only output, no tool use or file modifications.
 
 Claude is invoked with `-p` in both built-in modes so it runs non-interactively in a pipe. `auto` mode keeps tool access enabled via `--dangerously-skip-permissions`; `print` mode disables tools with `--tools ""`. Codex uses `--json` in the built-in auto path so `agent-pipe` can render terminal output as events arrive. Gemini uses `-o stream-json` in the built-in auto path for the same reason. Setting print mode for Codex or Gemini will throw an error — use the `adapters` config field to provide a custom command instead.
 
+| Agent | Command |
+|-------|---------|
+| claude | `claude -p --tools ""` |
+| codex | Not supported (use `adapters` override) |
+| gemini | Not supported (use `adapters` override) |
+
 ### `adapter_args`
 
 `adapter_args` appends extra CLI flags to the resolved command for each adapter.
+
+There is no top-level `model` field in `agent-pipe` today. If you want to choose a model, pass that agent CLI's model flag through `adapter_args`, or replace the full command with `adapters`.
 
 Use this when you want to keep the built-in adapter behavior but set things like:
 
@@ -414,11 +447,7 @@ Example:
 
 This is usually preferable to replacing the whole command in `adapters`, because the built-in streaming and session-resume paths still apply.
 
-| Agent | Command |
-|-------|---------|
-| claude | `claude -p --tools ""` |
-| codex | Not supported (use `adapters` override) |
-| gemini | Not supported (use `adapters` override) |
+These flags are adapter-specific and are passed through verbatim. `agent-pipe` validates that they are arrays of strings, but it does not normalize or semantically validate model names or flag meanings.
 
 **Resolution priority:**
 1. `config.adapters[agent]` — explicit base command array (highest priority).

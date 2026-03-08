@@ -1,8 +1,103 @@
-# coding-agent-git-pipe
+<div align="center">
 
-A lightweight TypeScript CLI orchestrator that chains autonomous AI coding agents (Claude Code, Codex, Gemini) into automated workflows using a minimal JSON contract.
+# 🔀 agent-pipe
 
-Each agent thinks it's talking to a human. It's not. It's talking to another agent through this pipe. The agents don't know each other exist — they only see abstract actions (plan, implement, review, pair), never agent names. The orchestrator stays dumb; the agents' autonomy is the feature.
+### Multi-agent peer review for AI coding CLIs
+
+**Plan with one mind. Implement with another. Review with a third.**
+
+[![npm version](https://img.shields.io/npm/v/coding-agent-git-pipe)](https://www.npmjs.com/package/coding-agent-git-pipe)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+```
+agent-pipe run "implement JWT refresh token flow"
+```
+
+🧠 Claude plans → ⚡ Codex implements → 🔍 Gemini reviews → ✅ You get peer-reviewed code
+
+</div>
+
+---
+
+## The Problem
+
+Software engineering teams never let the same person write and review their own code. It's a basic quality principle — the author has blind spots that a fresh pair of eyes will catch. But that's exactly what we do with AI coding agents today.
+
+**🔄 Self-review is broken.** When Claude writes code and Claude reviews it, the same reasoning patterns that introduced a bug will gloss over it during review. The model has consistent blind spots — it won't catch what it can't see. Just like a human developer, it needs a different reviewer.
+
+**🧠 Models think differently.** Claude, GPT/Codex, and Gemini each have distinct reasoning strengths. Claude excels at architecture and planning. Codex is fast and pragmatic at implementation. Gemini brings massive context windows and a different analytical lens. Using a single model for everything wastes the unique perspective each one offers.
+
+**💸 Cost and rate limits are uneven.** Claude Opus produces exceptional reasoning but is expensive and rate-limited. Codex has generous throughput. Gemini offers huge context windows. Today you're forced to pick one and eat the tradeoffs — or manually juggle between them.
+
+**📋 Manual multi-agent is painful.** Engineers who do use multiple AI tools end up as the glue: copy-pasting between CLIs, re-explaining context, losing session continuity, and manually deciding what goes where. The cognitive overhead often negates the benefit.
+
+**🔒 No standard handoff.** Each coding CLI is an island. There's no protocol for one agent to hand structured context to another, no way to say "I planned this, now you implement it, and someone else will review."
+
+### The result?
+
+Most developers settle for a single agent doing everything — planning, coding, and self-reviewing — and accept lower quality output than a multi-perspective workflow would produce. It's the same mistake as skipping code review on a team, but we accept it because orchestrating multiple AI agents was too hard.
+
+---
+
+## The Solution
+
+`agent-pipe` brings the peer review model to AI coding — automatically.
+
+```text
+You: agent-pipe run "implement JWT refresh token flow"
+
+  → 🧠 Claude plans the architecture and approach
+  → ⚡ Codex implements the code, runs tests
+  → 🔍 Gemini reviews the diff for correctness and edge cases
+  → 💬 Human is asked only when needed
+  → ✅ You come back to peer-reviewed, multi-perspective code
+```
+
+It works by orchestrating real autonomous coding CLIs (Claude Code, Codex, Gemini CLI) into a repeatable `plan → implement → review` pipeline using a tiny JSON handoff contract. Each agent runs as its own process with full shell access, file editing, and tool use — these aren't simulated personas inside one app.
+
+### ⚡ What you get
+
+| | Benefit | How |
+|---|---|---|
+| 🔀 | **Cross-model peer review** | A different model always reviews — catching blind spots the author can't see |
+| 🧠 | **Right model for the right job** | Route planning to deep reasoners, implementation to fast coders, review to fresh eyes |
+| 💰 | **Cost-aware routing** | Spend expensive tokens on reasoning, use high-throughput models for heavy lifting |
+| 🔗 | **Automatic handoffs** | No more copy-pasting between tools — structured context flows between agents |
+| 🧵 | **Session continuity** | `implement → review → implement` resumes where it left off, not from scratch |
+| 🛡️ | **Built-in guardrails** | Review gate, lock file, no-progress detection, and JSONL audit logs |
+| 🔌 | **Vendor-agnostic** | Routing is action-based (`plan`, `implement`, `review`) — swap models without changing workflows |
+| 🖥️ | **Terminal-first** | No IDE lock-in. Works anywhere you have a terminal |
+
+### 🏗️ How it's different
+
+| | What it's NOT | What it IS |
+|---|---|---|
+| ❌ | A prompt wrapper over one model | ✅ Coordination of independent, autonomous CLI agents |
+| ❌ | A massive workflow engine | ✅ A tiny contract, explicit routing, predictable handoffs |
+| ❌ | Locked to one vendor | ✅ Action-based routing with swappable adapters |
+| ❌ | An IDE plugin | ✅ A terminal-native pipe between real coding CLIs |
+
+```mermaid
+flowchart LR
+    U["👤 Your task"] --> A["🧠 First agent"]
+    A -->|plan| P["📋 Planning agent"]
+    A -->|implement| I["⚡ Implementation agent"]
+    A -->|pair| X["🤝 Pair agent"]
+    I -->|review| R["🔍 Review agent"]
+    P --> N["➡️ Next routed step"]
+    X --> I
+    R --> D["✅ Done or 💬 ask human"]
+```
+
+### 🎯 Who it's for
+
+- You want `plan → implement → review` without building a custom agent framework
+- You already use one or more coding CLIs and want them to collaborate
+- You want better output quality through multi-model peer review
+- You care about cost optimization across different model tiers
+- You want a minimal, inspectable system — not a black box
+
+For architecture details, programmatic usage, and internal APIs, see [API.md](./API.md).
 
 ## Table of Contents
 
@@ -44,8 +139,8 @@ agent-pipe init
 # Or run directly with npx (no install needed)
 npx coding-agent-git-pipe run "implement JWT refresh token flow"
 
-# If installed globally, use either alias
-cagp run "add dark mode support"
+# If installed globally
+agent-pipe run "add dark mode support"
 agent-pipe run "refactor auth module"
 ```
 
@@ -77,7 +172,7 @@ You do **not** need all three. See [Using With Fewer Agents](#using-with-fewer-a
 npm install -g coding-agent-git-pipe
 ```
 
-This gives you two global commands: `cagp` and `agent-pipe`.
+This gives you two global commands: `agent-pipe` and `cagp` (shorthand).
 
 ### npx (no install)
 
@@ -92,14 +187,14 @@ git clone https://github.com/user/coding-agent-git-pipe.git
 cd coding-agent-git-pipe
 npm install
 npm run build
-npm link    # makes cagp and agent-pipe available globally
+npm link    # makes agent-pipe and cagp available globally
 ```
 
 ### Verify installation
 
 ```bash
-cagp --version
-cagp --help
+agent-pipe --version
+agent-pipe --help
 ```
 
 ---
@@ -125,9 +220,9 @@ Then pass your task as a quoted string:
 
 ```bash
 # Basic usage
-cagp run "implement JWT refresh token flow"
+agent-pipe run "implement JWT refresh token flow"
 
-# Both aliases work identically
+# Shorthand alias works too
 agent-pipe run "add user authentication with OAuth2"
 ```
 
@@ -157,13 +252,13 @@ The orchestrator will:
 
 ```bash
 # Start with codex instead of claude, limit to 5 hops
-cagp run "add dark mode support" --first-agent codex --max-hops 5
+agent-pipe run "add dark mode support" --first-agent codex --max-hops 5
 
 # Longer timeout for complex tasks
 agent-pipe run "refactor auth module" --timeout-ms 600000
 
 # Disable no-progress guard (useful for planning-only tasks)
-cagp run "analyze codebase architecture" --no-progress-hops 0
+agent-pipe run "analyze codebase architecture" --no-progress-hops 0
 
 # Use a custom config file and different working directory
 agent-pipe run "fix login bug" --config ./my-config.json --cwd /path/to/repo
@@ -222,7 +317,7 @@ You don't need all three agents. Configure `.agentpipe.json` to route all action
 ## How It Works
 
 ```
-You: cagp run "implement JWT refresh token flow"
+You: agent-pipe run "implement JWT refresh token flow"
 
   Orchestrator -> Claude (plans the approach)
   Claude -> Codex (implements the code, runs tests)
@@ -459,7 +554,7 @@ Every agent response must end with a JSON contract. This is how agents tell the 
 | `message` | Yes | Concise technical handoff passed to the next step |
 | `questions` | Only for `ask-human` | Questions for the human to answer |
 
-**Important:** `to` uses action names (`plan`, `implement`, `review`, `pair`) — never agent names. The routing config maps actions to agents internally. This keeps agents unaware of each other.
+**Important:** `to` uses action names (`plan`, `implement`, `review`, `pair`) — never agent names. The routing config maps actions to agents internally. This keeps routing action-based instead of model-specific.
 
 ### Pair Action
 
@@ -550,7 +645,7 @@ npm install -g @openai/codex                # Codex
 
 ### "Lock file exists" error
 
-Another `cagp` run is active in this repo, or a previous run crashed without releasing its lock. The orchestrator checks if the PID in the lock is still alive — if the process died, it reclaims the lock automatically. If you're sure no run is active:
+Another `agent-pipe` run is active in this repo, or a previous run crashed without releasing its lock. The orchestrator checks if the PID in the lock is still alive — if the process died, it reclaims the lock automatically. If you're sure no run is active:
 
 ```bash
 rm .agentpipe.lock
@@ -565,7 +660,7 @@ Increase retries: `--max-retries 3`. If persistent, the agent may not be followi
 The no-progress guard triggers when the git repo state (HEAD + working tree) is unchanged for `no_progress_hops` consecutive steps. This often happens during planning-only tasks. Disable it:
 
 ```bash
-cagp run "analyze this code" --no-progress-hops 0
+agent-pipe run "analyze this code" --no-progress-hops 0
 ```
 
 ### Agent times out
@@ -573,7 +668,7 @@ cagp run "analyze this code" --no-progress-hops 0
 Default timeout is 30 minutes per agent. For complex tasks:
 
 ```bash
-cagp run "large refactoring task" --timeout-ms 3600000   # 1 hour
+agent-pipe run "large refactoring task" --timeout-ms 3600000   # 1 hour
 ```
 
 Or set per-agent timeouts in config:
@@ -663,7 +758,7 @@ console.log(result.hops);   // number of steps taken
 1. **Keep the orchestrator dumb.** Logic lives in agent prompts, not the pipe.
 2. **Keep the contract small.** A few fields for routing, nothing more.
 3. **Repo is shared state.** Agents read code directly. No code payloads in the contract.
-4. **Agents are opaque to each other.** No agent names in the contract. Only abstract actions.
+4. **Keep routing action-based.** No agent names in the contract. Only abstract actions.
 5. **Interrupt human only when needed.** On `ask-human`, parse failures, or safety limits.
 
 ---

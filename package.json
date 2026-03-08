@@ -1,7 +1,7 @@
 {
   "name": "coding-agent-git-pipe",
   "version": "1.0.0",
-  "description": "A lightweight orchestrator that routes tasks between local AI coding CLIs",
+  "description": "Orchestrate autonomous coding CLIs into plan→implement→review workflows",
   "bin": {
     "cagp": "./bin/cli.js",
     "agent-pipe": "./bin/cli.js"
