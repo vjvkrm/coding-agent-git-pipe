@@ -3,4 +3,4 @@ dist/
 .agentpipe/
 .agentpipe.lock
 *.tsbuildinfo
-todo.md
+pending.md
