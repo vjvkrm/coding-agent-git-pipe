@@ -66,7 +66,6 @@
 ## Remaining
 
 ### Phase 10: Release Prep
-- [ ] Add `LICENSE` (MIT).
 - [ ] Add `CONTRIBUTING.md`.
 - [ ] Publish first npm prerelease.
 

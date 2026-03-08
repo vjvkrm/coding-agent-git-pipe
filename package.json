@@ -2,9 +2,41 @@
   "name": "coding-agent-git-pipe",
   "version": "1.0.0",
   "description": "Orchestrate autonomous coding CLIs into plan→implement→review workflows",
+  "license": "AGPL-3.0-only",
+  "author": "Vijay Singh (https://www.linkedin.com/in/vijaysingh-softwareengineer-italy/)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vjvkrm/coding-agent-git-pipe.git"
+  },
+  "homepage": "https://github.com/vjvkrm/coding-agent-git-pipe#readme",
+  "bugs": {
+    "url": "https://github.com/vjvkrm/coding-agent-git-pipe/issues"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "multi-agent",
+    "cli",
+    "claude",
+    "codex",
+    "gemini",
+    "code-review",
+    "orchestrator",
+    "coding-agent"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "README.md",
+    "API.md",
+    "LICENSE"
+  ],
   "bin": {
-    "cagp": "./bin/cli.js",
-    "agent-pipe": "./bin/cli.js"
+    "agent-pipe": "./bin/cli.js",
+    "cagp": "./bin/cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

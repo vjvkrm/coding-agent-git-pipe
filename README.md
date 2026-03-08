@@ -7,7 +7,7 @@
 **Plan with one mind. Implement with another. Review with a third.**
 
 [![npm version](https://img.shields.io/npm/v/coding-agent-git-pipe)](https://www.npmjs.com/package/coding-agent-git-pipe)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
 ```
 agent-pipe run "implement JWT refresh token flow"
