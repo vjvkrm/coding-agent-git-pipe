@@ -386,7 +386,12 @@ async function getContractWithRetry(params: {
   timeoutMs: number;
   maxInvalidContractRetries: number;
   invokeAgentFn: InvokeAgentFn;
-}): Promise<{ contract: Contract; attempts: number; sessionRef: string | null }> {
+}): Promise<{
+  contract: Contract;
+  attempts: number;
+  sessionRef: string | null;
+  renderedStdout: boolean;
+}> {
   const {
     agent,
     stepScope,
@@ -424,6 +429,7 @@ async function getContractWithRetry(params: {
       process.stderr,
       formatTerminalPrefix(agent, stepScope, "stderr")
     );
+    let renderedStdout = false;
     let lastOutputAt = Date.now();
     const heartbeatId = setInterval(() => {
       const idleMs = Date.now() - lastOutputAt;
@@ -448,6 +454,9 @@ async function getContractWithRetry(params: {
             if (stream === "stderr") {
               writeStderr(chunk);
               return;
+            }
+            if (/\S/.test(chunk)) {
+              renderedStdout = true;
             }
             writeStdout(chunk);
           },
@@ -486,6 +495,7 @@ async function getContractWithRetry(params: {
         contract: parsedContract,
         attempts: attempt,
         sessionRef: currentSessionRef,
+        renderedStdout,
       };
     }
 
@@ -684,6 +694,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
       let contract: Contract;
       let attempts = 0;
       let resolvedSessionRef = threadState.sessionRef;
+      let renderedStdout = false;
       try {
         const result = await getContractWithRetry({
           agent: currentAgent,
@@ -701,6 +712,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
         contract = result.contract;
         attempts = result.attempts;
         resolvedSessionRef = result.sessionRef;
+        renderedStdout = result.renderedStdout;
       } catch (error) {
         if (error instanceof ContractAcquisitionError) {
           resolvedSessionRef = error.sessionRef;
@@ -757,6 +769,14 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
 
       if (currentStepPromptScope === "pair" && pairReturn !== null) {
         contract = normalizePairContract(contract);
+      }
+
+      if (!renderedStdout) {
+        const writeStdout = createPrefixedWriter(
+          process.stdout,
+          formatTerminalPrefix(currentAgent, currentStepPromptScope)
+        );
+        writeStdout(`${contract.message}\n`);
       }
 
       threadState.sessionRef = resolvedSessionRef;
