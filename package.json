@@ -1,7 +1,7 @@
 {
   "name": "agent-pipe",
-  "version": "1.0.0",
-  "description": "Orchestrate autonomous coding CLIs into plan→implement→review workflows",
+  "version": "1.0.1",
+  "description": "Orchestrate autonomous coding CLIs into primary→pair→review workflows",
   "license": "AGPL-3.0-only",
   "author": "Vijay Singh (https://www.linkedin.com/in/vijaysingh-softwareengineer-italy/)",
   "repository": {
@@ -31,6 +31,7 @@
     "bin/",
     "dist/",
     "README.md",
+    "CHANGELOG.md",
     "API.md",
     "LICENSE"
   ],
