@@ -407,7 +407,7 @@ Agents run with full autonomy — file editing, command execution, tool use.
 | Agent | Command |
 |-------|---------|
 | claude | `claude --dangerously-skip-permissions -p` |
-| codex | `codex exec --skip-git-repo-check --json -c model_reasoning_effort="medium"` |
+| codex | `codex exec --skip-git-repo-check --json` |
 | gemini | `gemini -o stream-json` |
 
 **`print` mode:**

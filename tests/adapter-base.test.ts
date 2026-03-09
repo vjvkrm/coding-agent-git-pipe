@@ -79,8 +79,6 @@ test("resolveAdapterCommand appends adapter_args to built-in commands", () => {
     "codex",
     "exec",
     "--skip-git-repo-check",
-    "-c",
-    'model_reasoning_effort="medium"',
     "--full-auto",
     "-m",
     "gpt-5.4",

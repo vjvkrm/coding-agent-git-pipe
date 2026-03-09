@@ -498,7 +498,7 @@ The actual commands invoked per mode:
 | Agent  | `auto`                                        | `print`                                 |
 | ------ | --------------------------------------------- | --------------------------------------- |
 | claude | `claude --dangerously-skip-permissions -p`    | `claude -p --tools ""`                  |
-| codex  | `codex exec --skip-git-repo-check --json ...` | Not supported (use `adapters` override) |
+| codex  | `codex exec --skip-git-repo-check --json` | Not supported (use `adapters` override) |
 | gemini | `gemini -o stream-json`                       | Not supported (use `adapters` override) |
 
 Set `"print"` for Claude when you only want text output (e.g., for planning-only steps):

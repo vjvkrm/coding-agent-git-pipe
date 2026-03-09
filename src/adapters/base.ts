@@ -3,13 +3,13 @@ import { AdapterInvocation, AgentName, Config } from "../types";
 
 export const PRINT_ADAPTER_COMMANDS: Record<AgentName, string[]> = {
   claude: ["claude", "-p", "--tools", ""],
-  codex: ["codex", "exec", "--skip-git-repo-check", "-c", 'model_reasoning_effort="medium"'],
+  codex: ["codex", "exec", "--skip-git-repo-check"],
   gemini: ["gemini"],
 };
 
 export const AUTO_ADAPTER_COMMANDS: Record<AgentName, string[]> = {
   claude: ["claude", "--dangerously-skip-permissions", "-p"],
-  codex: ["codex", "exec", "--skip-git-repo-check", "-c", 'model_reasoning_effort="medium"'],
+  codex: ["codex", "exec", "--skip-git-repo-check"],
   gemini: ["gemini"],
 };
 
