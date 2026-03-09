@@ -185,6 +185,48 @@ test("orchestrator pauses on ask-human and resumes", async () => {
   }
 });
 
+test("orchestrator fails fast when a required agent CLI is missing", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, {
+      first_agent: "claude",
+      routing: {
+        plan: "human",
+        implement: "human",
+        review: "human",
+        pair: "human",
+        "ask-human": "human",
+        done: "stop",
+      },
+      adapters: {
+        claude: ["__definitely_missing_claude_binary__"],
+      },
+    });
+
+    await assert.rejects(
+      () =>
+        runOrchestrator({
+          task: "start",
+          cwd,
+          configPath,
+          runtime: {
+            askHumanInput: async () => {
+              throw new Error("human gate should not open for missing binaries");
+            },
+            getRepoStateSignature: () => null,
+          },
+        }),
+      (error: Error) => {
+        assert.match(error.message, /Missing required agent CLI commands/);
+        assert.match(error.message, /claude: command "__definitely_missing_claude_binary__" was not found on PATH/);
+        return true;
+      }
+    );
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
 test("orchestrator carries recent human and agent context into follow-up prompts", async () => {
   const cwd = createTempRepo();
   try {

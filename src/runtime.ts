@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { resolveAdapterCommand } from "./adapters/base";
 import { AgentName, Config } from "./types";
 
 export function resolveRuntimePaths(cwd: string, config: Config): { lockPath: string; logDir: string } {
@@ -172,4 +173,69 @@ export function resolveTimeoutMs(agentName: AgentName, config: Config, cliTimeou
   }
 
   return config.agent_timeout_ms;
+}
+
+function isAgentName(value: string): value is AgentName {
+  return value === "claude" || value === "codex" || value === "gemini";
+}
+
+function isExecutable(commandPath: string): boolean {
+  try {
+    fs.accessSync(commandPath, fs.constants.X_OK);
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function isCommandAvailable(command: string): boolean {
+  if (command.trim() === "") {
+    return false;
+  }
+
+  if (command.includes(path.sep)) {
+    const resolved = path.isAbsolute(command) ? command : path.resolve(process.cwd(), command);
+    return isExecutable(resolved);
+  }
+
+  const pathValue = process.env.PATH || "";
+  for (const dir of pathValue.split(path.delimiter)) {
+    if (!dir) {
+      continue;
+    }
+
+    if (isExecutable(path.join(dir, command))) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function validateConfiguredAgentsAvailable(config: Config, firstAgent: AgentName): void {
+  const requiredAgents = new Set<AgentName>([firstAgent]);
+  for (const target of Object.values(config.routing)) {
+    if (isAgentName(target)) {
+      requiredAgents.add(target);
+    }
+  }
+
+  const missing: string[] = [];
+  for (const agent of requiredAgents) {
+    const commandParts = resolveAdapterCommand(agent, config);
+    const command = commandParts[0];
+    if (!isCommandAvailable(command)) {
+      missing.push(`- ${agent}: command "${command}" was not found on PATH`);
+    }
+  }
+
+  if (missing.length > 0) {
+    throw new Error(
+      [
+        "Missing required agent CLI commands:",
+        ...missing,
+        "Install the missing CLI, update first_agent/routing, or override the command via adapters.<agent>.",
+      ].join("\n")
+    );
+  }
 }

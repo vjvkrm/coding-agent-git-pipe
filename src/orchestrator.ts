@@ -5,7 +5,12 @@ import { validateContract } from "./contract";
 import { resolveTarget } from "./router";
 import { askHumanInput as defaultAskHumanInput } from "./human-gate";
 import { invokeAgent as defaultInvokeAgent } from "./adapters";
-import { acquireRunLock, createRunLogger, resolveTimeoutMs } from "./runtime";
+import {
+  acquireRunLock,
+  createRunLogger,
+  resolveTimeoutMs,
+  validateConfiguredAgentsAvailable,
+} from "./runtime";
 import { getRepoStateSignature as defaultGetRepoStateSignature } from "./git-state";
 import {
   AgentName,
@@ -544,6 +549,10 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
   });
 
   try {
+    if (!input.runtime?.invokeAgent) {
+      validateConfiguredAgentsAvailable(config, currentAgent);
+    }
+
     while (hopCount < maxHops) {
       const stepId = hopCount + 1;
       activeStepId = stepId;
