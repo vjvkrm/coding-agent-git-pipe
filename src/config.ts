@@ -3,27 +3,19 @@ import path from "path";
 import { AgentName, Config, NextAction, StepPromptScope, TargetName } from "./types";
 
 const ALLOWED_TARGETS = new Set<TargetName>(["claude", "codex", "gemini", "human", "stop"]);
-const ALLOWED_ACTIONS = new Set<NextAction>(["plan", "implement", "review", "pair", "ask-human", "done"]);
+const ALLOWED_ACTIONS = new Set<NextAction>(["primary", "review", "pair", "ask-human", "done"]);
 const ALLOWED_AGENTS = new Set<AgentName>(["claude", "codex", "gemini"]);
-const ALLOWED_STEP_PROMPT_SCOPES = new Set<StepPromptScope>([
-  "first_agent",
-  "plan",
-  "implement",
-  "review",
-  "pair",
-]);
+const ALLOWED_STEP_PROMPT_SCOPES = new Set<StepPromptScope>(["primary", "review", "pair"]);
 
 export const DEFAULT_CONFIG: Config = {
   routing: {
-    plan: "claude",
-    implement: "codex",
+    primary: "codex",
     review: "gemini",
     pair: "claude",
     "ask-human": "human",
     done: "stop",
   },
-  max_hops: 20,
-  first_agent: "claude",
+  max_hops: 50,
   agent_timeout_ms: 1800000,
   max_invalid_contract_retries: 1,
   no_progress_hops: 3,
@@ -34,9 +26,7 @@ export const DEFAULT_CONFIG: Config = {
   adapter_args: {},
   adapters: {},
   step_prompts: {
-    first_agent: [],
-    plan: [],
-    implement: [],
+    primary: [],
     review: [],
     pair: [],
   },
@@ -88,6 +78,13 @@ function validateRouting(config: Config, candidatePath: string): void {
           "expected one of claude,codex,gemini,human,stop"
       );
     }
+  }
+
+  const primaryTarget = config.routing.primary;
+  if (!ALLOWED_AGENTS.has(primaryTarget as AgentName)) {
+    throw new Error(
+      `Invalid routing target for action "primary" in ${candidatePath}; expected one of claude,codex,gemini`
+    );
   }
 }
 
@@ -190,14 +187,6 @@ function validateAdapterModes(config: Config, candidatePath: string): void {
   }
 }
 
-function validateFirstAgent(config: Config, candidatePath: string): void {
-  if (!ALLOWED_AGENTS.has(config.first_agent)) {
-    throw new Error(
-      `Invalid first_agent in ${candidatePath}; expected one of claude,codex,gemini`
-    );
-  }
-}
-
 function validateStepPrompts(config: Config, candidatePath: string): void {
   if (!isPlainObject(config.step_prompts)) {
     throw new Error(`Invalid step_prompts in ${candidatePath}; expected an object`);
@@ -206,7 +195,7 @@ function validateStepPrompts(config: Config, candidatePath: string): void {
   for (const scope of Object.keys(config.step_prompts)) {
     if (!ALLOWED_STEP_PROMPT_SCOPES.has(scope as StepPromptScope)) {
       throw new Error(
-        `Invalid step_prompts key "${scope}" in ${candidatePath}; expected first_agent,plan,implement,review,pair`
+        `Invalid step_prompts key "${scope}" in ${candidatePath}; expected primary,review,pair`
       );
     }
   }
@@ -248,17 +237,12 @@ export function loadConfig(options: { cwd?: string; configPath?: string | null }
   if (!Number.isInteger(config.max_hops) || config.max_hops <= 0) {
     throw new Error(`Invalid max_hops in ${candidatePath}; expected positive integer`);
   }
-  if (typeof config.first_agent !== "string" || config.first_agent.trim() === "") {
-    throw new Error(`Invalid first_agent in ${candidatePath}; expected non-empty string`);
-  }
-
   validateRouting(config, candidatePath);
   validateTimeouts(config, candidatePath);
   validatePaths(config, candidatePath);
   validateAdapterModes(config, candidatePath);
   validateAgentStringArrayMap(config.adapter_args, candidatePath, "adapter_args");
   validateAgentStringArrayMap(config.adapters, candidatePath, "adapters");
-  validateFirstAgent(config, candidatePath);
   validateStepPrompts(config, candidatePath);
 
   if (typeof config.review_gate !== "boolean") {

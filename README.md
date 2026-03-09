@@ -4,7 +4,7 @@
 
 ### A tiny CLI that lets 🧠 Claude, ⚡ Codex, and 🔍 Gemini collaborate 🤝 like a real engineering team.
 
-**Plan with one mind. Implement with another. Review with a third.**
+**One primary agent drives. A pair agent helps. A review agent checks the result.**
 
 [![npm version](https://img.shields.io/npm/v/agent-pipe)](https://www.npmjs.com/package/agent-pipe)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
@@ -13,7 +13,7 @@
 agent-pipe run "implement JWT refresh token flow"
 ```
 
-🧠 Claude plans → ⚡ Codex implements → 🔍 Gemini reviews → ✅ You get peer-reviewed code
+⚡ Codex drives → 🧠 Claude pairs when needed → 🔍 Gemini reviews → ✅ You get peer-reviewed code
 
 </div>
 
@@ -31,11 +31,11 @@ Software engineering teams never let the same person write and review their own 
 
 **📋 Manual multi-agent is painful.** Engineers who do use multiple AI tools end up as the glue: copy-pasting between CLIs, re-explaining context, losing session continuity, and manually deciding what goes where. The cognitive overhead often negates the benefit.
 
-**🔒 No standard handoff.** Each coding CLI is an island. There's no protocol for one agent to hand structured context to another, no way to say "I planned this, now you implement it, and someone else will review."
+**🔒 No standard handoff.** Each coding CLI is an island. There's no protocol for one agent to hand structured context to another, no way to say "continue this as the primary thread", "pair with me on this", or "review this before we finish."
 
 ### The result?
 
-Most developers settle for a single agent doing everything — planning, coding, and self-reviewing — and accept lower quality output than a multi-perspective workflow would produce. It's the same mistake as skipping code review on a team, but we accept it because orchestrating multiple AI agents was too hard.
+Most developers settle for a single agent doing everything — driving the task, pairing with itself, and self-reviewing — and accept lower quality output than a multi-perspective workflow would produce. It's the same mistake as skipping code review on a team, but we accept it because orchestrating multiple AI agents was too hard.
 
 ---
 
@@ -46,26 +46,26 @@ Most developers settle for a single agent doing everything — planning, coding,
 ```text
 You: agent-pipe run "implement JWT refresh token flow"
 
-  → 🧠 Claude plans the architecture and approach
-  → ⚡ Codex implements the code, runs tests
+  → ⚡ Codex owns the primary thread and works the repo
+  → 🧠 Claude joins as a pair agent when extra reasoning helps
   → 🔍 Gemini reviews the diff for correctness and edge cases
   → 💬 Human is asked only when needed
   → ✅ You come back to peer-reviewed, multi-perspective code
 ```
 
-It works by orchestrating real autonomous coding CLIs (Claude Code, Codex, Gemini CLI) into a repeatable `plan → implement → review` pipeline using a tiny JSON handoff contract. Each agent runs as its own process with full shell access, file editing, and tool use — these aren't simulated personas inside one app.
+It works by orchestrating real autonomous coding CLIs (Claude Code, Codex, Gemini CLI) into a repeatable `primary → review` flow with optional `pair` hops, using a tiny JSON handoff contract. Each agent runs as its own process with full shell access, file editing, and tool use — these aren't simulated personas inside one app.
 
 ### ⚡ What you get
 
 |     | Benefit                           | How                                                                                              |
 | --- | --------------------------------- | ------------------------------------------------------------------------------------------------ |
 | 🔀  | **Cross-model peer review**       | A different model always reviews — catching blind spots the author can't see                     |
-| 🧠  | **Right model for the right job** | Route planning to deep reasoners, implementation to fast coders, review to fresh eyes            |
+| 🧠  | **Right model for the right job** | Let one agent own the task, call in a pair when needed, and route review to fresh eyes           |
 | 💰  | **Cost-aware routing**            | Spend expensive tokens on reasoning, use high-throughput models for heavy lifting                |
 | 🔗  | **Automatic handoffs**            | No more copy-pasting between tools — structured context flows between agents                     |
-| 🧵  | **Session continuity**            | `implement → review → implement` resumes where it left off, not from scratch                     |
+| 🧵  | **Session continuity**            | `primary → review → primary` resumes where it left off, not from scratch                         |
 | 🛡️  | **Built-in guardrails**           | Review gate, lock file, no-progress detection, and JSONL audit logs                              |
-| 🔌  | **Vendor-agnostic**               | Routing is action-based (`plan`, `implement`, `review`) — swap models without changing workflows |
+| 🔌  | **Vendor-agnostic**               | Routing is action-based (`primary`, `pair`, `review`) — swap models without changing workflows   |
 | 🖥️  | **Terminal-first**                | No IDE lock-in. Works anywhere you have a terminal                                               |
 
 ### 🏗️ How it's different
@@ -79,19 +79,16 @@ It works by orchestrating real autonomous coding CLIs (Claude Code, Codex, Gemin
 
 ```mermaid
 flowchart LR
-    U["👤 Your task"] --> A["🧠 First agent"]
-    A -->|plan| P["📋 Planning agent"]
-    A -->|implement| I["⚡ Implementation agent"]
-    A -->|pair| X["🤝 Pair agent"]
-    I -->|review| R["🔍 Review agent"]
-    P --> N["➡️ Next routed step"]
-    X --> I
+    U["👤 Your task"] --> P["⚡ Primary agent"]
+    P -->|pair| X["🤝 Pair agent"]
+    P -->|review| R["🔍 Review agent"]
+    X --> P
     R --> D["✅ Done or 💬 ask human"]
 ```
 
 ### 🎯 Who it's for
 
-- You want `plan → implement → review` without building a custom agent framework
+- You want `primary → review` with optional `pair` hops without building a custom agent framework
 - You already use one or more coding CLIs and want them to collaborate
 - You want better output quality through multi-model peer review
 - You care about cost optimization across different model tiers
@@ -152,6 +149,9 @@ npm install -g coding-agent-git-pipe
 cd /path/to/repo
 agent-pipe init
 
+# Edit .agentpipe.json and choose which installed CLIs should be
+# your primary, review, and pair agents
+
 # Or run directly with npx (no install needed)
 npx coding-agent-git-pipe run "implement JWT refresh token flow"
 
@@ -160,7 +160,7 @@ agent-pipe run "add dark mode support"
 agent-pipe run "refactor auth module"
 ```
 
-That's it. The orchestrator will route your task through Claude (plan) -> Codex (implement) -> Gemini (review) by default, streaming each agent's output to your terminal in real time.
+`agent-pipe init` writes a starter routing config. The shipped defaults are `primary=codex`, `review=gemini`, and `pair=claude`, but you should change those to match the CLIs you actually have installed and want to use.
 
 ---
 
@@ -232,11 +232,19 @@ agent-pipe init --cwd /path/to/repo
 agent-pipe init --force
 ```
 
+After `init`, edit `.agentpipe.json` and choose your routing explicitly:
+
+- `routing.primary`: the main working CLI for the run
+- `routing.review`: the CLI you want as the review/signoff lane
+- `routing.pair`: the advisory CLI used for temporary pair hops
+
+The generated defaults are only a starter template. They are not a requirement, and they are not the right choice for every machine.
+
 Then pass your task as a quoted string:
 
 ```bash
 # Basic usage
-agent-pipe run "implement JWT refresh token flow"
+agent-pipe run "add JWT refresh token support"
 
 # Shorthand alias works too
 agent-pipe run "add user authentication with OAuth2"
@@ -244,7 +252,7 @@ agent-pipe run "add user authentication with OAuth2"
 
 The orchestrator will:
 
-1. Send your task to the first agent (Claude by default)
+1. Send your task to the primary agent (Codex by default)
 2. Stream the agent's output to your terminal in real time
 3. Parse the agent's routing contract
 4. Hand off to the next agent automatically
@@ -252,10 +260,10 @@ The orchestrator will:
 
 ### CLI Flags
 
-| Flag                     | Default           | Description                                                            |
-| ------------------------ | ----------------- | ---------------------------------------------------------------------- |
-| `--first-agent <name>`   | `claude`          | Which agent receives the initial task (`claude`, `codex`, or `gemini`) |
-| `--max-hops <n>`         | `20`              | Maximum routing hops before stopping                                   |
+| Flag                     | Default           | Description                                                              |
+| ------------------------ | ----------------- | ------------------------------------------------------------------------ |
+| `--primary-agent <name>` | `codex`           | Override the primary agent for this run (`claude`, `codex`, or `gemini`) |
+| `--max-hops <n>`         | `50`              | Maximum routing hops before stopping                                   |
 | `--timeout-ms <n>`       | `1800000`         | Per-agent timeout in milliseconds (default: 30 min)                    |
 | `--max-retries <n>`      | `1`               | Contract parse retries before escalating to human                      |
 | `--no-progress-hops <n>` | `3`               | Ask human if repo unchanged for N consecutive steps (0 = disabled)     |
@@ -268,8 +276,8 @@ The orchestrator will:
 ### Examples
 
 ```bash
-# Start with codex instead of claude, limit to 5 hops
-agent-pipe run "add dark mode support" --first-agent codex --max-hops 5
+# Start with claude instead of the default codex primary agent, limit to 5 hops
+agent-pipe run "add dark mode support" --primary-agent claude --max-hops 5
 
 # Longer timeout for complex tasks
 agent-pipe run "refactor auth module" --timeout-ms 600000
@@ -290,13 +298,12 @@ You don't need all three agents. Configure `.agentpipe.json` to route all action
 ```json
 {
   "routing": {
-    "plan": "claude",
-    "implement": "claude",
+    "primary": "claude",
     "review": "claude",
+    "pair": "claude",
     "ask-human": "human",
     "done": "stop"
-  },
-  "first_agent": "claude"
+  }
 }
 ```
 
@@ -305,9 +312,9 @@ You don't need all three agents. Configure `.agentpipe.json` to route all action
 ```json
 {
   "routing": {
-    "plan": "claude",
-    "implement": "codex",
+    "primary": "codex",
     "review": "claude",
+    "pair": "claude",
     "ask-human": "human",
     "done": "stop"
   }
@@ -319,13 +326,12 @@ You don't need all three agents. Configure `.agentpipe.json` to route all action
 ```json
 {
   "routing": {
-    "plan": "codex",
-    "implement": "codex",
+    "primary": "codex",
     "review": "codex",
+    "pair": "codex",
     "ask-human": "human",
     "done": "stop"
-  },
-  "first_agent": "codex"
+  }
 }
 ```
 
@@ -336,15 +342,13 @@ You don't need all three agents. Configure `.agentpipe.json` to route all action
 ```
 You: agent-pipe run "implement JWT refresh token flow"
 
-  Orchestrator -> Claude (plans the approach)
-  Claude -> Codex (implements the code, runs tests)
+  Orchestrator -> Codex (owns the primary thread)
   Codex -> Claude (pair: asks for architecture advice)
   Claude -> Codex (returns with suggestions)
   Codex -> Gemini (reviews the diff, runs linters)
-  Gemini -> Claude (requests changes)
-  Claude -> Human (asks a question)
-  Human -> Claude (answers)
-  Claude -> done
+  Gemini -> Human (asks a question)
+  Human -> Gemini (answers)
+  Gemini -> done
 
 You come back to a reviewed implementation.
 ```
@@ -373,15 +377,13 @@ agent-pipe init
 ```json
 {
   "routing": {
-    "plan": "claude",
-    "implement": "codex",
+    "primary": "codex",
     "review": "gemini",
     "pair": "claude",
     "ask-human": "human",
     "done": "stop"
   },
-  "max_hops": 20,
-  "first_agent": "claude",
+  "max_hops": 50,
   "agent_timeout_ms": 1800000,
   "max_invalid_contract_retries": 1,
   "no_progress_hops": 3,
@@ -393,9 +395,7 @@ agent-pipe init
   "adapter_args": {},
   "adapters": {},
   "step_prompts": {
-    "first_agent": [],
-    "plan": [],
-    "implement": [],
+    "primary": [],
     "review": [],
     "pair": []
   }
@@ -403,6 +403,14 @@ agent-pipe init
 ```
 
 All fields are optional. Defaults are applied for anything not specified.
+
+The most important thing to set after `init` is `routing`:
+
+- choose which installed CLI should own `primary`
+- choose which installed CLI should own `review`
+- choose which installed CLI should own `pair`
+
+If you only use one or two CLIs, route the unused actions to the tools you do have instead of keeping the starter defaults.
 
 Add to your `.gitignore`:
 
@@ -415,27 +423,25 @@ Add to your `.gitignore`:
 
 | Field                          | Type                             | Default                                                      | Description                                                                                  |
 | ------------------------------ | -------------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| `routing`                      | `Record<action, target>`         | plan->claude, implement->codex, review->gemini, pair->claude | Maps actions to agents. Targets: `claude`, `codex`, `gemini`, `human`, `stop`                |
-| `max_hops`                     | `number`                         | `20`                                                         | Max routing hops before stopping                                                             |
-| `first_agent`                  | `string`                         | `"claude"`                                                   | Which agent receives the initial task                                                        |
+| `routing`                      | `Record<action, target>`         | primary->codex, review->gemini, pair->claude                 | Maps actions to agents. These are starter defaults from `init`; set them to the CLIs you actually use. Targets: `claude`, `codex`, `gemini`, `human`, `stop` |
+| `max_hops`                     | `number`                         | `50`                                                         | Max routing hops before stopping                                                             |
 | `agent_timeout_ms`             | `number`                         | `1800000` (30min)                                            | Default per-agent timeout                                                                    |
 | `max_invalid_contract_retries` | `number`                         | `1`                                                          | Retries for invalid contract output                                                          |
 | `no_progress_hops`             | `number`                         | `3`                                                          | Ask human if repo unchanged for N hops (0 = disabled)                                        |
 | `lock_file`                    | `string`                         | `".agentpipe.lock"`                                          | Lock file path for concurrency protection                                                    |
 | `log_dir`                      | `string`                         | `".agentpipe/runs"`                                          | JSONL log directory                                                                          |
-| `review_gate`                  | `boolean`                        | `true`                                                       | If enabled, intercepts `implement -> done` and routes that completion through `review` first |
+| `review_gate`                  | `boolean`                        | `true`                                                       | If enabled, `primary -> done` is forced through `review` whenever repo state changed since the last review (or repo state is unavailable) |
 | `agent_timeouts_ms`            | `Record<agent, number>`          | `{}`                                                         | Per-agent timeout overrides                                                                  |
 | `adapter_modes`                | `Record<agent, "print"\|"auto">` | `{}` (all default to `auto`)                                 | Per-agent execution mode                                                                     |
 | `adapter_args`                 | `Record<agent, string[]>`        | `{}`                                                         | Extra CLI flags appended to the resolved adapter command                                     |
 | `adapters`                     | `Record<agent, string[]>`        | `{}`                                                         | Per-agent command override                                                                   |
-| `step_prompts`                 | `Record<scope, string[]>`        | all empty arrays                                             | Hidden prompt instructions scoped to `first_agent`, `plan`, `implement`, `review`, or `pair` |
+| `step_prompts`                 | `Record<scope, string[]>`        | all empty arrays                                             | Hidden prompt instructions scoped to `primary`, `review`, or `pair`                          |
 
 ### Step Prompts
 
 Use `step_prompts` when you want to bias behavior by stage without changing the visible task text.
 
-- `first_agent` applies to the initial stage and survives human clarification until the run hands off into a routed `plan`, `implement`, `review`, or `pair` step.
-- `plan`, `implement`, `review`, and `pair` apply based on the routed action for the current hop, not the agent name.
+- `primary`, `review`, and `pair` apply based on the routed action for the current hop, not the agent name.
 - These instructions are injected into the agent prompt invisibly; they do not print to the terminal.
 
 Example:
@@ -443,13 +449,7 @@ Example:
 ```json
 {
   "step_prompts": {
-    "first_agent": [
-      "Analyze first. Route intentionally. Do not implement immediately."
-    ],
-    "plan": [
-      "Planning only. Prefer decomposition and routing over code edits."
-    ],
-    "implement": ["Focus on concrete repo changes and validation."],
+    "primary": ["Focus on concrete repo changes and validation."],
     "review": ["Review for correctness, regressions, and missing tests."],
     "pair": [
       "Provide expert advice, suggestions, and approach validation. Do not modify code."
@@ -460,11 +460,13 @@ Example:
 
 ### Step Threads and Sessions
 
-`agent-pipe` now keeps a logical thread per step scope instead of treating every hop as a blank one-shot exchange.
+`agent-pipe` now keeps one logical thread per agent CLI instead of treating every hop as a blank one-shot exchange.
 
-- Default thread keys are `first_agent`, `plan`, `implement`, and `review`.
-- Pair hops use a separate thread namespace: `pair:<origin-scope>`. That keeps pair advice sessions separate from the invoking step's own session.
-- Built-in adapters reuse native CLI session ids when available. When a custom adapter cannot resume natively, `agent-pipe` falls back to prompt replay for continuity.
+- Default thread keys are the agent names themselves: `codex`, `gemini`, and `claude`.
+- If the same CLI is used again later, even from a different orchestration scope, that same logical session is resumed.
+- Pair hops no longer create separate `pair:<origin>` namespaces. If `claude` is your pair agent, all pair hops in the run reuse the same Claude session.
+- Built-in adapters reuse native CLI session ids when available. For Codex, `agent-pipe` also falls back to Codex's local state DB if `exec --json` does not emit the session id in stdout.
+- When a custom adapter cannot resume natively, `agent-pipe` falls back to prompt replay for continuity.
 - When a step resumes, the prompt only includes the new handoff plus turns since that thread last ran. Older context stays in the native CLI session instead of being replayed every time.
 
 ### Better Handoffs
@@ -478,11 +480,13 @@ Every agent prompt now includes a hidden handoff rubric.
 
 ### Review Gate
 
-By default, `agent-pipe` will not let an `implement` step finish the run directly.
+By default, `agent-pipe` treats `review` as the final acceptance gate for changed repo state.
 
-- If an `implement` step emits `done`, the orchestrator redirects that completion to the configured `review` route first.
+- If a `primary` step emits `done` after the repo changed since the last review, the orchestrator redirects that completion to the configured `review` route first.
+- If the repo state is unchanged since the last review, `primary -> done` is allowed to pass through directly.
+- If repo state cannot be determined, the gate stays conservative and still routes through `review`.
 - A `review` step can still emit `done` normally.
-- Set `"review_gate": false` if you want to allow `implement -> done` without an automatic review hop.
+- Set `"review_gate": false` if you want to allow `primary -> done` without this automatic review enforcement.
 
 ### Adapter Modes
 
@@ -528,7 +532,7 @@ You can even swap in a completely different tool (e.g., aider) by routing to an 
 ```json
 {
   "routing": {
-    "implement": "codex"
+    "primary": "codex"
   },
   "adapters": {
     "codex": ["aider", "--yes", "--message"]
@@ -536,7 +540,7 @@ You can even swap in a completely different tool (e.g., aider) by routing to an 
 }
 ```
 
-This routes "implement" actions to the "codex" slot but runs `aider` instead.
+This routes `primary` actions to the `codex` slot but runs `aider` instead.
 
 Use `adapter_args` when you want to keep the built-in adapter behavior but add flags like model selection, sandbox, or permission settings.
 
@@ -563,8 +567,8 @@ Every agent response must end with a JSON contract. This is how agents tell the 
 ```json
 {
   "contract_version": "1",
-  "next_action": "plan | implement | review | pair | ask-human | done",
-  "to": "(optional) plan | implement | review | pair | ask-human | done",
+  "next_action": "primary | review | pair | ask-human | done",
+  "to": "(optional) primary | review | pair | ask-human | done",
   "message": "concise technical handoff for the next step",
   "questions": [{ "id": "q1", "text": "Only used when next_action=ask-human" }]
 }
@@ -578,7 +582,7 @@ Every agent response must end with a JSON contract. This is how agents tell the 
 | `message`          | Yes                  | Concise technical handoff passed to the next step     |
 | `questions`        | Only for `ask-human` | Questions for the human to answer                     |
 
-**Important:** `to` uses action names (`plan`, `implement`, `review`, `pair`) — never agent names. The routing config maps actions to agents internally. This keeps routing action-based instead of model-specific.
+**Important:** `to` uses action names (`primary`, `review`, `pair`) — never agent names. The routing config maps actions to agents internally. This keeps routing action-based instead of model-specific.
 
 ### Pair Action
 
@@ -589,18 +593,18 @@ The `pair` action enables pair-programming sessions. When an agent emits `next_a
 3. The pair agent provides advice, suggestions, or approach validation.
 4. After the pair agent responds, the orchestrator **automatically returns** to the original invoking agent with the pair agent's response as the message.
 
-The return is forced regardless of what the pair agent sets as its own `next_action`. Nested pair calls are not supported — if the pair agent emits `pair`, it is treated as a normal routing action.
+The return is forced regardless of what the pair agent sets as its own `next_action`. Pair is advisory-only: the pair agent does not control routing. `agent-pipe` ignores pair-step `next_action` / `to` values and uses only the returned `message` before returning to the caller. Nested pair calls are not supported — if the pair agent emits `pair`, it is treated as a normal routing action.
 
 ### Done Gate
 
 When a contract resolves to `done -> stop`, the run no longer exits immediately.
 
 1. The agent's completion message is shown through the human gate.
-2. You can reply with `finish` to end the run.
+2. You can reply with `finish` or `/finish` to end the run.
 3. You can reply with `continue` to enter a second follow-up message prompt.
 4. Any other non-empty reply is treated as a direct follow-up and continues immediately.
 
-In all continue cases, the follow-up goes back to the same agent and the same saved step thread/session that emitted `done`.
+In all continue cases, the follow-up goes back to the same agent and the same saved logical agent session that emitted `done`. Outside the done gate, `/finish` also works from any human pause (`ask-human`, failures, and no-progress prompts).
 
 ---
 
@@ -608,18 +612,18 @@ In all continue cases, the follow-up goes back to the same agent and the same sa
 
 1. Start run with task string.
 2. Acquire lock file (prevents concurrent runs in the same repo).
-3. Invoke first agent with task + contract instructions.
+3. Invoke the primary agent with task + contract instructions.
 4. Stream stdout/stderr to terminal live (prefixed with agent name).
 5. Parse the final JSON contract block from output.
 6. Validate contract fields.
 7. Route to next target via config routing table.
 8. On `pair` action: save return context, route to pair agent, then auto-return after one hop.
 9. On target `human` (default for `ask-human`) or failures: pause for human input.
-10. On `done -> stop`: open the human finish/continue gate. On `finish`, stop. On `continue`, resume the same step thread/session.
+10. On `done -> stop`: open the human finish/continue gate. On `finish` or `/finish`, stop. On `continue`, resume the same logical agent session.
 11. Check no-progress guard (git state unchanged for too many steps?).
 12. Write JSONL event log per step. Release lock on exit/signals.
 
-The orchestrator maintains a rolling conversation history (last 4 turns) and separate step-thread session state so returning to `implement` or `review` can continue naturally instead of restarting from scratch.
+The orchestrator maintains a rolling conversation history (last 4 turns) and separate per-agent session state so returning to the same CLI later can continue naturally instead of restarting from scratch.
 
 ---
 
@@ -630,13 +634,10 @@ The orchestrator maintains a rolling conversation history (last 4 turns) and sep
 Agent output is streamed live to your terminal, prefixed with the agent name:
 
 ```
-[claude] I'll plan the implementation of JWT refresh tokens...
-[claude] The approach will be:
-[claude]   1. Create a refresh token model
-[claude]   2. Add rotation logic
-...
-[codex] Implementing the JWT refresh token flow...
-[codex:stderr] Running tests...
+[codex][primary] I’ll add JWT refresh token support and validate the auth flow.
+[codex][primary] Running tests...
+[claude][pair] Consider rotating refresh tokens on every successful exchange.
+[gemini][review] I found one missing edge case around revoked tokens.
 ```
 
 A heartbeat message (`... still working`) appears every 10 seconds if an agent produces no output, so you know the process hasn't hung.
@@ -646,8 +647,8 @@ A heartbeat message (`... still working`) appears every 10 seconds if an agent p
 Every run produces a detailed JSONL log at `.agentpipe/runs/{runId}.jsonl`. Each line is a timestamped JSON event:
 
 ```jsonl
-{"ts":"2026-03-05T10:00:00.000Z","run_id":"abc-123","type":"run_started","first_agent":"claude","max_hops":20}
-{"ts":"2026-03-05T10:00:00.100Z","run_id":"abc-123","type":"step_started","step_id":1,"agent":"claude"}
+{"ts":"2026-03-05T10:00:00.000Z","run_id":"abc-123","type":"run_started","primary_agent":"codex","max_hops":50}
+{"ts":"2026-03-05T10:00:00.100Z","run_id":"abc-123","type":"step_started","step_id":1,"agent":"codex","step_scope":"primary"}
 {"ts":"2026-03-05T10:02:30.000Z","run_id":"abc-123","type":"step_contract","step_id":1,"contract":{...}}
 {"ts":"2026-03-05T10:05:00.000Z","run_id":"abc-123","type":"run_completed","status":"done"}
 ```
@@ -766,7 +767,7 @@ import { runOrchestrator } from "coding-agent-git-pipe/src/orchestrator";
 
 const result = await runOrchestrator({
   task: "implement JWT refresh token flow",
-  firstAgent: "claude",
+  primaryAgent: "codex",
   maxHops: 5,
   cwd: "/path/to/repo",
 });

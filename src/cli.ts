@@ -15,7 +15,7 @@ function printHelp(): void {
   console.log("  run                         Execute an orchestration task");
   console.log("");
   console.log("Run options:");
-  console.log("  --first-agent <name>       First agent (claude|codex|gemini)");
+  console.log("  --primary-agent <name>     Primary agent (claude|codex|gemini)");
   console.log("  --max-hops <number>        Maximum routing hops before pause");
   console.log("  --timeout-ms <number>      Per-agent timeout in milliseconds");
   console.log("  --max-retries <number>     Contract parse retries (default from config)");
@@ -33,7 +33,7 @@ function printHelp(): void {
 
 function parseRunArgs(args: string[]): {
   taskParts: string[];
-  firstAgent: AgentName | null;
+  primaryAgent: AgentName | null;
   maxHops: number | null;
   timeoutMs: number | null;
   maxRetries: number | null;
@@ -44,7 +44,7 @@ function parseRunArgs(args: string[]): {
 } {
   const parsed = {
     taskParts: [] as string[],
-    firstAgent: null as AgentName | null,
+    primaryAgent: null as AgentName | null,
     maxHops: null as number | null,
     timeoutMs: null as number | null,
     maxRetries: null as number | null,
@@ -58,8 +58,8 @@ function parseRunArgs(args: string[]): {
     const arg = args[i];
     const next = args[i + 1];
 
-    if (arg === "--first-agent" && next) {
-      parsed.firstAgent = next as AgentName;
+    if (arg === "--primary-agent" && next) {
+      parsed.primaryAgent = next as AgentName;
       i += 1;
       continue;
     }
@@ -191,14 +191,16 @@ export async function main(argv = process.argv): Promise<void> {
     });
 
     console.log(`Created ${createdPath}`);
-    console.log('Next: edit the config if needed, then run `agent-pipe run "<task>"` from that repo.');
+    console.log(
+      "Next: set routing.primary, routing.review, and routing.pair to the CLIs you actually use, then run `agent-pipe run \"<task>\"` from that repo."
+    );
     process.exit(0);
   }
 
   const parsed = parseRunArgs(args.slice(1));
   const task = parsed.taskParts.join(" ").trim();
   if (!task) {
-    console.error('Missing task string. Example: agent-pipe run "implement JWT refresh flow"');
+    console.error('Missing task string. Example: agent-pipe run "add JWT refresh token support"');
     process.exit(1);
   }
 
@@ -225,17 +227,17 @@ export async function main(argv = process.argv): Promise<void> {
     process.exit(1);
   }
 
-  if (parsed.firstAgent !== null) {
+  if (parsed.primaryAgent !== null) {
     const allowed = new Set<AgentName>(["claude", "codex", "gemini"]);
-    if (!allowed.has(parsed.firstAgent)) {
-      console.error("--first-agent must be one of: claude, codex, gemini");
+    if (!allowed.has(parsed.primaryAgent)) {
+      console.error("--primary-agent must be one of: claude, codex, gemini");
       process.exit(1);
     }
   }
 
   const result = await runOrchestrator({
     task,
-    firstAgent: parsed.firstAgent,
+    primaryAgent: parsed.primaryAgent,
     maxHops: parsed.maxHops,
     timeoutMs: parsed.timeoutMs,
     maxInvalidContractRetries: parsed.maxRetries,

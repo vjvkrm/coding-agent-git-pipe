@@ -6,13 +6,13 @@ test("validateContract accepts valid contract", () => {
   const contract = validateContract({
     contract_version: "1",
     next_action: "review",
-    to: "plan",
+    to: "primary",
     message: "  review auth flow  ",
   });
 
   assert.equal(contract.contract_version, "1");
   assert.equal(contract.next_action, "review");
-  assert.equal(contract.to, "plan");
+  assert.equal(contract.to, "primary");
   assert.equal(contract.message, "review auth flow");
 });
 

@@ -29,15 +29,13 @@ function cleanupTempRepo(dir: string): void {
 function writeConfig(cwd: string, overrides: Partial<Config> = {}): string {
   const config: Config = {
     routing: {
-      plan: "claude",
-      implement: "codex",
+      primary: "codex",
       review: "gemini",
       pair: "claude",
       "ask-human": "human",
       done: "stop",
     },
     max_hops: 8,
-    first_agent: "claude",
     agent_timeout_ms: 1800000,
     max_invalid_contract_retries: 1,
     no_progress_hops: 0,
@@ -48,9 +46,7 @@ function writeConfig(cwd: string, overrides: Partial<Config> = {}): string {
     adapter_args: {},
     adapters: {},
     step_prompts: {
-      first_agent: [],
-      plan: [],
-      implement: [],
+      primary: [],
       review: [],
       pair: [],
     },
@@ -101,16 +97,11 @@ function createInvokeStub(queue: QueueItem[]) {
   };
 }
 
-test("orchestrator runs plan->implement->review->done", async () => {
+test("orchestrator runs primary->review->done", async () => {
   const cwd = createTempRepo();
   try {
-    const configPath = writeConfig(cwd, { no_progress_hops: 0 });
+    const configPath = writeConfig(cwd, { no_progress_hops: 0, review_gate: false });
     const invokeStub = createInvokeStub([
-      {
-        contract_version: "1",
-        next_action: "implement",
-        message: "implement auth",
-      },
       {
         contract_version: "1",
         next_action: "review",
@@ -135,8 +126,8 @@ test("orchestrator runs plan->implement->review->done", async () => {
     });
 
     assert.equal(result.status, "done");
-    assert.equal(result.hops, 3);
-    assert.deepEqual(invokeStub.calls, ["claude", "codex", "gemini"]);
+    assert.equal(result.hops, 2);
+    assert.deepEqual(invokeStub.calls, ["codex", "gemini"]);
   } finally {
     cleanupTempRepo(cwd);
   }
@@ -145,7 +136,7 @@ test("orchestrator runs plan->implement->review->done", async () => {
 test("orchestrator pauses on ask-human and resumes", async () => {
   const cwd = createTempRepo();
   try {
-    const configPath = writeConfig(cwd, { no_progress_hops: 0 });
+    const configPath = writeConfig(cwd, { no_progress_hops: 0, review_gate: false });
     const invokeStub = createInvokeStub([
       {
         contract_version: "1",
@@ -179,7 +170,7 @@ test("orchestrator pauses on ask-human and resumes", async () => {
     assert.equal(result.status, "done");
     assert.equal(result.hops, 2);
     assert.equal(humanCalls, 2);
-    assert.deepEqual(invokeStub.calls, ["claude", "claude"]);
+    assert.deepEqual(invokeStub.calls, ["codex", "codex"]);
   } finally {
     cleanupTempRepo(cwd);
   }
@@ -189,10 +180,8 @@ test("orchestrator fails fast when a required agent CLI is missing", async () =>
   const cwd = createTempRepo();
   try {
     const configPath = writeConfig(cwd, {
-      first_agent: "claude",
       routing: {
-        plan: "human",
-        implement: "human",
+        primary: "claude",
         review: "human",
         pair: "human",
         "ask-human": "human",
@@ -230,7 +219,7 @@ test("orchestrator fails fast when a required agent CLI is missing", async () =>
 test("orchestrator carries recent human and agent context into follow-up prompts", async () => {
   const cwd = createTempRepo();
   try {
-    const configPath = writeConfig(cwd, { no_progress_hops: 0, first_agent: "codex" });
+    const configPath = writeConfig(cwd, { no_progress_hops: 0, review_gate: false });
     const invokeStub = createInvokeStub([
       {
         contract_version: "1",
@@ -276,15 +265,14 @@ test("orchestrator carries recent human and agent context into follow-up prompts
   }
 });
 
-test("orchestrator injects first_agent step prompts on the initial hop", async () => {
+test("orchestrator injects primary step prompts on the initial hop", async () => {
   const cwd = createTempRepo();
   try {
     const configPath = writeConfig(cwd, {
       no_progress_hops: 0,
+      review_gate: false,
       step_prompts: {
-        first_agent: ["Analyze first and route intentionally."],
-        plan: [],
-        implement: [],
+        primary: ["Analyze first and route intentionally."],
         review: [],
         pair: [],
       },
@@ -351,25 +339,23 @@ test("orchestrator prompts include technical handoff guidance", async () => {
   }
 });
 
-test("orchestrator switches hidden step prompts to the routed action", async () => {
+test("orchestrator switches hidden step prompts when routing from primary to review", async () => {
   const cwd = createTempRepo();
   try {
     const configPath = writeConfig(cwd, {
       no_progress_hops: 0,
       review_gate: false,
       step_prompts: {
-        first_agent: ["Do not implement immediately."],
-        plan: [],
-        implement: ["Focus on making concrete repo changes."],
-        review: [],
+        primary: ["Focus on making concrete repo changes."],
+        review: ["Audit the result carefully before approving it."],
         pair: [],
       },
     } as Partial<Config>);
     const invokeStub = createInvokeStub([
       {
         contract_version: "1",
-        next_action: "implement",
-        message: "implement the fix",
+        next_action: "review",
+        message: "ready for review",
       },
       {
         contract_version: "1",
@@ -390,9 +376,9 @@ test("orchestrator switches hidden step prompts to the routed action", async () 
     });
 
     assert.equal(invokeStub.prompts.length, 2);
-    assert.match(invokeStub.prompts[0], /Do not implement immediately\./);
-    assert.match(invokeStub.prompts[1], /Focus on making concrete repo changes\./);
-    assert.doesNotMatch(invokeStub.prompts[1], /Do not implement immediately\./);
+    assert.match(invokeStub.prompts[0], /Focus on making concrete repo changes\./);
+    assert.match(invokeStub.prompts[1], /Audit the result carefully before approving it\./);
+    assert.doesNotMatch(invokeStub.prompts[1], /Focus on making concrete repo changes\./);
   } finally {
     cleanupTempRepo(cwd);
   }
@@ -405,18 +391,16 @@ test("orchestrator preserves the current step prompt scope across ask-human", as
       no_progress_hops: 0,
       review_gate: false,
       step_prompts: {
-        first_agent: ["Route the initial request before coding."],
-        plan: [],
-        implement: ["Stay in implementation mode after clarification."],
-        review: [],
+        primary: ["Focus on concrete repo changes."],
+        review: ["Stay in review mode after clarification."],
         pair: [],
       },
     } as Partial<Config>);
     const invokeStub = createInvokeStub([
       {
         contract_version: "1",
-        next_action: "implement",
-        message: "implement the fix",
+        next_action: "review",
+        message: "review the fix",
       },
       {
         contract_version: "1",
@@ -444,23 +428,22 @@ test("orchestrator preserves the current step prompt scope across ask-human", as
     });
 
     assert.equal(invokeStub.prompts.length, 3);
-    assert.match(invokeStub.prompts[1], /Stay in implementation mode after clarification\./);
-    assert.match(invokeStub.prompts[2], /Stay in implementation mode after clarification\./);
+    assert.match(invokeStub.prompts[1], /Stay in review mode after clarification\./);
+    assert.match(invokeStub.prompts[2], /Stay in review mode after clarification\./);
     assert.match(invokeStub.prompts[2], /Current handoff from human:\nuse the README path/);
   } finally {
     cleanupTempRepo(cwd);
   }
 });
 
-test("orchestrator preserves first_agent step prompts through initial human clarification", async () => {
+test("orchestrator preserves primary step prompts through initial human clarification", async () => {
   const cwd = createTempRepo();
   try {
     const configPath = writeConfig(cwd, {
       no_progress_hops: 0,
+      review_gate: false,
       step_prompts: {
-        first_agent: ["Only analyze and route on the first stage."],
-        plan: [],
-        implement: [],
+        primary: ["Only analyze and route on the primary step."],
         review: [],
         pair: [],
       },
@@ -492,8 +475,8 @@ test("orchestrator preserves first_agent step prompts through initial human clar
     });
 
     assert.equal(invokeStub.prompts.length, 2);
-    assert.match(invokeStub.prompts[0], /Only analyze and route on the first stage\./);
-    assert.match(invokeStub.prompts[1], /Only analyze and route on the first stage\./);
+    assert.match(invokeStub.prompts[0], /Only analyze and route on the primary step\./);
+    assert.match(invokeStub.prompts[1], /Only analyze and route on the primary step\./);
     assert.match(invokeStub.prompts[1], /Current handoff from human:\nREADME only/);
   } finally {
     cleanupTempRepo(cwd);
@@ -503,7 +486,7 @@ test("orchestrator preserves first_agent step prompts through initial human clar
 test("orchestrator limits invisible prompt context to the last four turns", async () => {
   const cwd = createTempRepo();
   try {
-    const configPath = writeConfig(cwd, { no_progress_hops: 0 });
+    const configPath = writeConfig(cwd, { no_progress_hops: 0, review_gate: false });
     const invokeStub = createInvokeStub([
       {
         contract_version: "1",
@@ -541,9 +524,9 @@ test("orchestrator limits invisible prompt context to the last four turns", asyn
       invokeStub.prompts[2],
       /Current handoff from human:\nsecond human answer/
     );
-    assert.match(invokeStub.prompts[2], /claude:\n  first agent question/);
+    assert.match(invokeStub.prompts[2], /codex:\n  first agent question/);
     assert.match(invokeStub.prompts[2], /human:\n  first human answer/);
-    assert.match(invokeStub.prompts[2], /claude:\n  second agent question/);
+    assert.match(invokeStub.prompts[2], /codex:\n  second agent question/);
     assert.doesNotMatch(invokeStub.prompts[2], /human:\n  initial task/);
   } finally {
     cleanupTempRepo(cwd);
@@ -555,6 +538,7 @@ test("orchestrator retries once on invalid contract output", async () => {
   try {
     const configPath = writeConfig(cwd, {
       no_progress_hops: 0,
+      review_gate: false,
       max_invalid_contract_retries: 1,
     });
     const invokeStub = createInvokeStub([
@@ -590,6 +574,7 @@ test("orchestrator forwards a direct agent question to the human after contract 
   try {
     const configPath = writeConfig(cwd, {
       no_progress_hops: 0,
+      review_gate: false,
       max_invalid_contract_retries: 0,
     });
     const invokeStub = createInvokeStub([
@@ -618,11 +603,11 @@ test("orchestrator forwards a direct agent question to the human after contract 
     });
 
     assert.equal(result.status, "done");
-    assert.deepEqual(invokeStub.calls, ["claude", "claude"]);
+    assert.deepEqual(invokeStub.calls, ["codex", "codex"]);
     assert.equal(humanPayloads.length, 2);
     assert.match(
       humanPayloads[0].message || "",
-      /Claude asked the human a direct follow-up instead of returning an `ask-human` contract/
+      /Codex asked the human a direct follow-up instead of returning an `ask-human` contract/
     );
     assert.match(humanPayloads[0].message || "", /Which config file should I update before continuing\?/);
     assert.match(invokeStub.prompts[1], /Current handoff from human:\nUpdate \.agentpipe\.json/);
@@ -636,10 +621,8 @@ test("orchestrator stops at max_hops", async () => {
   try {
     const configPath = writeConfig(cwd, {
       max_hops: 3,
-      first_agent: "codex",
       routing: {
-        plan: "codex",
-        implement: "codex",
+        primary: "codex",
         review: "codex",
         pair: "codex",
         "ask-human": "human",
@@ -650,17 +633,17 @@ test("orchestrator stops at max_hops", async () => {
     const invokeStub = createInvokeStub([
       {
         contract_version: "1",
-        next_action: "implement",
+        next_action: "primary",
         message: "keep going 1",
       },
       {
         contract_version: "1",
-        next_action: "implement",
+        next_action: "primary",
         message: "keep going 2",
       },
       {
         contract_version: "1",
-        next_action: "implement",
+        next_action: "primary",
         message: "keep going 3",
       },
     ]);
@@ -691,9 +674,9 @@ test("routing.done is respected from config (not hardcoded)", async () => {
     const configPath = writeConfig(cwd, {
       no_progress_hops: 0,
       max_hops: 3,
+      review_gate: false,
       routing: {
-        plan: "claude",
-        implement: "codex",
+        primary: "codex",
         review: "gemini",
         pair: "claude",
         "ask-human": "human",
@@ -733,7 +716,7 @@ test("routing.done is respected from config (not hardcoded)", async () => {
     // It should keep routing to claude until max_hops.
     assert.equal(result.status, "max-hops");
     assert.equal(result.hops, 3);
-    assert.deepEqual(invokeStub.calls, ["claude", "claude", "claude"]);
+    assert.deepEqual(invokeStub.calls, ["codex", "claude", "claude"]);
   } finally {
     cleanupTempRepo(cwd);
   }
@@ -746,7 +729,7 @@ test("no-progress guard asks human after consecutive unchanged repo states", asy
     const invokeStub = createInvokeStub([
       {
         contract_version: "1",
-        next_action: "implement",
+        next_action: "primary",
         message: "step one",
       },
       {
@@ -786,7 +769,7 @@ test("no-progress guard asks human after consecutive unchanged repo states", asy
   }
 });
 
-test("implement -> review -> implement reuses the original implement session", async () => {
+test("primary -> review -> primary reuses the original primary session", async () => {
   const cwd = createTempRepo();
   try {
     const configPath = writeConfig(cwd, { no_progress_hops: 0, review_gate: false } as Partial<Config>);
@@ -794,10 +777,10 @@ test("implement -> review -> implement reuses the original implement session", a
       {
         response: {
           contract_version: "1",
-          next_action: "implement",
+          next_action: "primary",
           message: "implement auth",
         },
-        sessionRef: "first-agent-session",
+        sessionRef: "primary-session",
       },
       {
         response: {
@@ -805,12 +788,12 @@ test("implement -> review -> implement reuses the original implement session", a
           next_action: "review",
           message: "implemented auth",
         },
-        sessionRef: "implement-session",
+        sessionRef: "primary-session",
       },
       {
         response: {
           contract_version: "1",
-          next_action: "implement",
+          next_action: "primary",
           message: "please tighten validation",
         },
         sessionRef: "review-session",
@@ -821,7 +804,7 @@ test("implement -> review -> implement reuses the original implement session", a
           next_action: "done",
           message: "validation tightened",
         },
-        sessionRef: "implement-session",
+        sessionRef: "primary-session",
       },
     ]);
 
@@ -837,9 +820,61 @@ test("implement -> review -> implement reuses the original implement session", a
     });
 
     assert.equal(result.status, "done");
-    assert.deepEqual(invokeStub.calls, ["claude", "codex", "gemini", "codex"]);
-    assert.equal(invokeStub.sessionRefs[3], "implement-session");
+    assert.deepEqual(invokeStub.calls, ["codex", "codex", "gemini", "codex"]);
+    assert.equal(invokeStub.sessionRefs[3], "primary-session");
     assert.match(invokeStub.prompts[3], /Current handoff from gemini:\nplease tighten validation/);
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
+test("the same agent session is reused across primary and review scopes", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, {
+      no_progress_hops: 0,
+      review_gate: false,
+      routing: {
+        primary: "codex",
+        review: "codex",
+        pair: "claude",
+        "ask-human": "human",
+        done: "stop",
+      },
+    });
+    const invokeStub = createInvokeStub([
+      {
+        response: {
+          contract_version: "1",
+          next_action: "review",
+          message: "ready for review",
+        },
+        sessionRef: "codex-session",
+      },
+      {
+        response: {
+          contract_version: "1",
+          next_action: "done",
+          message: "approved",
+        },
+        sessionRef: "codex-session",
+      },
+    ]);
+
+    const result = await runOrchestrator({
+      task: "start",
+      cwd,
+      configPath,
+      runtime: {
+        invokeAgent: invokeStub.invokeAgent,
+        askHumanInput: async () => "finish",
+        getRepoStateSignature: () => null,
+      },
+    });
+
+    assert.equal(result.status, "done");
+    assert.deepEqual(invokeStub.calls, ["codex", "codex"]);
+    assert.equal(invokeStub.sessionRefs[1], "codex-session");
   } finally {
     cleanupTempRepo(cwd);
   }
@@ -848,7 +883,7 @@ test("implement -> review -> implement reuses the original implement session", a
 test("ask-human within a step resumes the same saved session", async () => {
   const cwd = createTempRepo();
   try {
-    const configPath = writeConfig(cwd, { no_progress_hops: 0 });
+    const configPath = writeConfig(cwd, { no_progress_hops: 0, review_gate: false });
     const invokeStub = createInvokeStub([
       {
         response: {
@@ -857,7 +892,7 @@ test("ask-human within a step resumes the same saved session", async () => {
           message: "need clarification",
           questions: [{ id: "q1", text: "which scope?" }],
         },
-        sessionRef: "claude-session",
+        sessionRef: "codex-session",
       },
       {
         response: {
@@ -865,7 +900,7 @@ test("ask-human within a step resumes the same saved session", async () => {
           next_action: "done",
           message: "done after clarification",
         },
-        sessionRef: "claude-session",
+        sessionRef: "codex-session",
       },
     ]);
     const humanReplies = ["narrow the scope", "finish"];
@@ -882,8 +917,8 @@ test("ask-human within a step resumes the same saved session", async () => {
     });
 
     assert.equal(result.status, "done");
-    assert.deepEqual(invokeStub.calls, ["claude", "claude"]);
-    assert.equal(invokeStub.sessionRefs[1], "claude-session");
+    assert.deepEqual(invokeStub.calls, ["codex", "codex"]);
+    assert.equal(invokeStub.sessionRefs[1], "codex-session");
     assert.match(invokeStub.prompts[1], /Current handoff from human:\nnarrow the scope/);
   } finally {
     cleanupTempRepo(cwd);
@@ -895,6 +930,7 @@ test("direct human fallback without a saved session preserves the agent question
   try {
     const configPath = writeConfig(cwd, {
       no_progress_hops: 0,
+      review_gate: false,
       max_invalid_contract_retries: 0,
     });
     const invokeStub = createInvokeStub([
@@ -922,12 +958,12 @@ test("direct human fallback without a saved session preserves the agent question
     });
 
     assert.equal(result.status, "done");
-    assert.deepEqual(invokeStub.calls, ["claude", "claude"]);
+    assert.deepEqual(invokeStub.calls, ["codex", "codex"]);
     assert.equal(invokeStub.sessionRefs[1], null);
     assert.match(invokeStub.prompts[1], /Current handoff from human:\nUpdate \.agentpipe\.json first/);
     assert.match(
       invokeStub.prompts[1],
-      /Recent conversation context[\s\S]*claude:\n  Which config file should I update before continuing\?/
+      /Recent conversation context[\s\S]*codex:\n  Which config file should I update before continuing\?/
     );
   } finally {
     cleanupTempRepo(cwd);
@@ -937,7 +973,7 @@ test("direct human fallback without a saved session preserves the agent question
 test("done routed to stop opens the finish or continue gate", async () => {
   const cwd = createTempRepo();
   try {
-    const configPath = writeConfig(cwd, { no_progress_hops: 0 });
+    const configPath = writeConfig(cwd, { no_progress_hops: 0, review_gate: false });
     const invokeStub = createInvokeStub([
       {
         response: {
@@ -945,7 +981,7 @@ test("done routed to stop opens the finish or continue gate", async () => {
           next_action: "done",
           message: "all done",
         },
-        sessionRef: "claude-session",
+        sessionRef: "codex-session",
       },
     ]);
 
@@ -957,7 +993,7 @@ test("done routed to stop opens the finish or continue gate", async () => {
       runtime: {
         invokeAgent: invokeStub.invokeAgent,
         askHumanInput: async (payload) => {
-          if ((payload.footer || "").includes('Reply with "finish" to end the run')) {
+          if ((payload.footer || "").includes('Reply with "finish" or "/finish" to end the run')) {
             doneGatePrompts += 1;
           }
           return "finish";
@@ -969,7 +1005,7 @@ test("done routed to stop opens the finish or continue gate", async () => {
     assert.equal(result.status, "done");
     assert.equal(result.hops, 1);
     assert.equal(doneGatePrompts, 1);
-    assert.deepEqual(invokeStub.calls, ["claude"]);
+    assert.deepEqual(invokeStub.calls, ["codex"]);
   } finally {
     cleanupTempRepo(cwd);
   }
@@ -978,7 +1014,7 @@ test("done routed to stop opens the finish or continue gate", async () => {
 test("continue after done resumes the same agent session", async () => {
   const cwd = createTempRepo();
   try {
-    const configPath = writeConfig(cwd, { no_progress_hops: 0 });
+    const configPath = writeConfig(cwd, { no_progress_hops: 0, review_gate: false });
     const invokeStub = createInvokeStub([
       {
         response: {
@@ -986,7 +1022,7 @@ test("continue after done resumes the same agent session", async () => {
           next_action: "done",
           message: "initial answer",
         },
-        sessionRef: "claude-session",
+        sessionRef: "codex-session",
       },
       {
         response: {
@@ -994,7 +1030,7 @@ test("continue after done resumes the same agent session", async () => {
           next_action: "done",
           message: "extra detail",
         },
-        sessionRef: "claude-session",
+        sessionRef: "codex-session",
       },
     ]);
     const humanReplies = ["continue", "tell me more", "finish"];
@@ -1012,8 +1048,8 @@ test("continue after done resumes the same agent session", async () => {
 
     assert.equal(result.status, "done");
     assert.equal(result.hops, 2);
-    assert.deepEqual(invokeStub.calls, ["claude", "claude"]);
-    assert.equal(invokeStub.sessionRefs[1], "claude-session");
+    assert.deepEqual(invokeStub.calls, ["codex", "codex"]);
+    assert.equal(invokeStub.sessionRefs[1], "codex-session");
     assert.match(invokeStub.prompts[1], /Current handoff from human:\ntell me more/);
   } finally {
     cleanupTempRepo(cwd);
@@ -1025,9 +1061,9 @@ test("pair action routes to pair agent and returns to invoking agent", async () 
   try {
     const configPath = writeConfig(cwd, {
       no_progress_hops: 0,
+      review_gate: false,
       routing: {
-        plan: "claude",
-        implement: "codex",
+        primary: "codex",
         review: "gemini",
         pair: "gemini",
         "ask-human": "human",
@@ -1035,7 +1071,7 @@ test("pair action routes to pair agent and returns to invoking agent", async () 
       },
     });
     const invokeStub = createInvokeStub([
-      // Step 1: codex (implement) invokes pair
+      // Step 1: codex (primary) invokes pair
       {
         contract_version: "1",
         next_action: "pair",
@@ -1044,7 +1080,7 @@ test("pair action routes to pair agent and returns to invoking agent", async () 
       // Step 2: gemini (pair) responds with advice
       {
         contract_version: "1",
-        next_action: "implement",
+        next_action: "primary",
         message: "use JWT with short-lived access tokens and refresh flow",
       },
       // Step 3: codex (returned from pair) finishes
@@ -1057,7 +1093,6 @@ test("pair action routes to pair agent and returns to invoking agent", async () 
 
     const result = await runOrchestrator({
       task: "start",
-      firstAgent: "codex",
       cwd,
       configPath,
       runtime: {
@@ -1076,15 +1111,14 @@ test("pair action routes to pair agent and returns to invoking agent", async () 
   }
 });
 
-test("pair thread keeps its own session while the invoking step resumes its original session", async () => {
+test("pair agent keeps its own session while the invoking agent resumes its original session", async () => {
   const cwd = createTempRepo();
   try {
     const configPath = writeConfig(cwd, {
       no_progress_hops: 0,
       review_gate: false,
       routing: {
-        plan: "claude",
-        implement: "codex",
+        primary: "codex",
         review: "gemini",
         pair: "gemini",
         "ask-human": "human",
@@ -1095,10 +1129,10 @@ test("pair thread keeps its own session while the invoking step resumes its orig
       {
         response: {
           contract_version: "1",
-          next_action: "implement",
+          next_action: "primary",
           message: "implement auth",
         },
-        sessionRef: "first-agent-session",
+        sessionRef: "primary-session",
       },
       {
         response: {
@@ -1106,7 +1140,7 @@ test("pair thread keeps its own session while the invoking step resumes its orig
           next_action: "pair",
           message: "validate my approach",
         },
-        sessionRef: "implement-session",
+        sessionRef: "primary-session",
       },
       {
         response: {
@@ -1122,7 +1156,7 @@ test("pair thread keeps its own session while the invoking step resumes its orig
           next_action: "done",
           message: "implemented with pair feedback",
         },
-        sessionRef: "implement-session",
+        sessionRef: "primary-session",
       },
     ]);
 
@@ -1142,14 +1176,98 @@ test("pair thread keeps its own session while the invoking step resumes its orig
     });
 
     assert.equal(result.status, "done");
-    assert.deepEqual(invokeStub.calls, ["claude", "codex", "gemini", "codex"]);
+    assert.deepEqual(invokeStub.calls, ["codex", "codex", "gemini", "codex"]);
     assert.equal(invokeStub.sessionRefs[2], null);
-    assert.equal(invokeStub.sessionRefs[3], "implement-session");
+    assert.equal(invokeStub.sessionRefs[3], "primary-session");
     assert.equal(humanCalls, 1);
     assert.match(
       invokeStub.prompts[3],
       /Current handoff from gemini:\npair advice/
     );
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
+test("pair agent session is reused across primary and review callers", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, {
+      no_progress_hops: 0,
+      review_gate: false,
+      routing: {
+        primary: "codex",
+        review: "gemini",
+        pair: "claude",
+        "ask-human": "human",
+        done: "stop",
+      },
+    } as Partial<Config>);
+    const invokeStub = createInvokeStub([
+      {
+        response: {
+          contract_version: "1",
+          next_action: "pair",
+          message: "pair on implementation",
+        },
+        sessionRef: "primary-session",
+      },
+      {
+        response: {
+          contract_version: "1",
+          next_action: "done",
+          message: "first pair advice",
+        },
+        sessionRef: "claude-session",
+      },
+      {
+        response: {
+          contract_version: "1",
+          next_action: "review",
+          message: "ready for review",
+        },
+        sessionRef: "primary-session",
+      },
+      {
+        response: {
+          contract_version: "1",
+          next_action: "pair",
+          message: "pair on review",
+        },
+        sessionRef: "review-session",
+      },
+      {
+        response: {
+          contract_version: "1",
+          next_action: "done",
+          message: "second pair advice",
+        },
+        sessionRef: "claude-session",
+      },
+      {
+        response: {
+          contract_version: "1",
+          next_action: "done",
+          message: "review complete",
+        },
+        sessionRef: "review-session",
+      },
+    ]);
+
+    const result = await runOrchestrator({
+      task: "start",
+      cwd,
+      configPath,
+      runtime: {
+        invokeAgent: invokeStub.invokeAgent,
+        askHumanInput: async () => "finish",
+        getRepoStateSignature: () => null,
+      },
+    });
+
+    assert.equal(result.status, "done");
+    assert.deepEqual(invokeStub.calls, ["codex", "claude", "codex", "gemini", "claude", "gemini"]);
+    assert.equal(invokeStub.sessionRefs[4], "claude-session");
   } finally {
     cleanupTempRepo(cwd);
   }
@@ -1162,33 +1280,25 @@ test("pair return restores the original step prompt scope", async () => {
       no_progress_hops: 0,
       review_gate: false,
       step_prompts: {
-        first_agent: [],
-        plan: [],
-        implement: ["Focus on concrete changes."],
+        primary: ["Focus on concrete changes."],
         review: [],
         pair: ["Provide expert advice only."],
       },
     } as Partial<Config>);
     const invokeStub = createInvokeStub([
-      // Step 1: claude (first_agent) routes to implement
-      {
-        contract_version: "1",
-        next_action: "implement",
-        message: "implement auth",
-      },
-      // Step 2: codex (implement) invokes pair
+      // Step 1: codex (primary) invokes pair
       {
         contract_version: "1",
         next_action: "pair",
         message: "validate my approach",
       },
-      // Step 3: claude (pair) responds
+      // Step 2: claude (pair) responds
       {
         contract_version: "1",
         next_action: "done",
         message: "approach looks good",
       },
-      // Step 4: codex (returned) finishes
+      // Step 3: codex (returned) finishes
       {
         contract_version: "1",
         next_action: "done",
@@ -1207,37 +1317,40 @@ test("pair return restores the original step prompt scope", async () => {
       },
     });
 
-    assert.equal(invokeStub.prompts.length, 4);
-    // Step 2 (implement) should have implement prompts
-    assert.match(invokeStub.prompts[1], /Focus on concrete changes\./);
-    // Step 3 (pair) should have pair prompts
-    assert.match(invokeStub.prompts[2], /Provide expert advice only\./);
-    // Step 4 (returned to implement) should have implement prompts restored
-    assert.match(invokeStub.prompts[3], /Focus on concrete changes\./);
-    assert.doesNotMatch(invokeStub.prompts[3], /Provide expert advice only\./);
+    assert.equal(invokeStub.prompts.length, 3);
+    assert.match(invokeStub.prompts[0], /Focus on concrete changes\./);
+    assert.match(invokeStub.prompts[1], /Provide expert advice only\./);
+    assert.match(
+      invokeStub.prompts[1],
+      /Return a handoff message for the invoking agent; do not attempt to choose global routing for the run\./
+    );
+    assert.match(
+      invokeStub.prompts[1],
+      /Pair routing is fixed by the caller\. Your `next_action` and `to` fields are ignored; only `message` is used\./
+    );
+    assert.match(
+      invokeStub.prompts[1],
+      /Set `next_action` to `done` and focus on making `message` useful for the caller\./
+    );
+    assert.match(invokeStub.prompts[2], /Focus on concrete changes\./);
+    assert.doesNotMatch(invokeStub.prompts[2], /Provide expert advice only\./);
   } finally {
     cleanupTempRepo(cwd);
   }
 });
 
-test("review gate redirects implement→done to review", async () => {
+test("review gate redirects primary→done to review when repo state is unavailable", async () => {
   const cwd = createTempRepo();
   try {
     const configPath = writeConfig(cwd, { no_progress_hops: 0 });
     const invokeStub = createInvokeStub([
-      // Step 1: claude (first_agent) routes to implement
-      {
-        contract_version: "1",
-        next_action: "implement",
-        message: "implement auth",
-      },
-      // Step 2: codex (implement) tries to go done — gate should redirect to review
+      // Step 1: codex (primary) tries to finish — gate should redirect to review
       {
         contract_version: "1",
         next_action: "done",
         message: "auth implemented",
       },
-      // Step 3: gemini (review) approves
+      // Step 2: gemini (review) approves
       {
         contract_version: "1",
         next_action: "done",
@@ -1257,40 +1370,22 @@ test("review gate redirects implement→done to review", async () => {
     });
 
     assert.equal(result.status, "done");
-    assert.equal(result.hops, 3);
-    // claude -> codex (implement) -> gemini (review, redirected) -> done
-    assert.deepEqual(invokeStub.calls, ["claude", "codex", "gemini"]);
+    assert.equal(result.hops, 2);
+    assert.deepEqual(invokeStub.calls, ["codex", "gemini"]);
   } finally {
     cleanupTempRepo(cwd);
   }
 });
 
-test("review gate does not intercept plan→done", async () => {
+test("review gate allows primary→done when repo state is unchanged since the last review", async () => {
   const cwd = createTempRepo();
   try {
-    const configPath = writeConfig(cwd, {
-      no_progress_hops: 0,
-      routing: {
-        plan: "claude",
-        implement: "codex",
-        review: "gemini",
-        pair: "claude",
-        "ask-human": "human",
-        done: "stop",
-      },
-    });
+    const configPath = writeConfig(cwd, { no_progress_hops: 0 });
     const invokeStub = createInvokeStub([
-      // Step 1: claude routes to plan
-      {
-        contract_version: "1",
-        next_action: "plan",
-        message: "plan first",
-      },
-      // Step 2: claude (plan) goes done — should NOT be intercepted
       {
         contract_version: "1",
         next_action: "done",
-        message: "plan complete",
+        message: "analysis complete",
       },
     ]);
 
@@ -1301,14 +1396,13 @@ test("review gate does not intercept plan→done", async () => {
       runtime: {
         invokeAgent: invokeStub.invokeAgent,
         askHumanInput: async () => "finish",
-        getRepoStateSignature: () => null,
+        getRepoStateSignature: () => "same-state",
       },
     });
 
     assert.equal(result.status, "done");
-    assert.equal(result.hops, 2);
-    // No redirect to review — plan→done goes straight through
-    assert.deepEqual(invokeStub.calls, ["claude", "claude"]);
+    assert.equal(result.hops, 1);
+    assert.deepEqual(invokeStub.calls, ["codex"]);
   } finally {
     cleanupTempRepo(cwd);
   }
@@ -1322,13 +1416,7 @@ test("review gate can be disabled via config", async () => {
       review_gate: false,
     } as Partial<Config>);
     const invokeStub = createInvokeStub([
-      // Step 1: claude routes to implement
-      {
-        contract_version: "1",
-        next_action: "implement",
-        message: "implement auth",
-      },
-      // Step 2: codex (implement) goes done — gate disabled, should NOT redirect
+      // Step 1: codex (primary) goes done — gate disabled, so it should stop directly
       {
         contract_version: "1",
         next_action: "done",
@@ -1348,9 +1436,51 @@ test("review gate can be disabled via config", async () => {
     });
 
     assert.equal(result.status, "done");
-    assert.equal(result.hops, 2);
-    // No review step — gate was disabled
-    assert.deepEqual(invokeStub.calls, ["claude", "codex"]);
+    assert.equal(result.hops, 1);
+    assert.deepEqual(invokeStub.calls, ["codex"]);
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
+test("review updates the reviewed repo-state baseline before returning to primary", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, { no_progress_hops: 0 });
+    const invokeStub = createInvokeStub([
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "implementation ready",
+      },
+      {
+        contract_version: "1",
+        next_action: "primary",
+        message: "tighten one validation edge case",
+      },
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "validation tightened",
+      },
+    ]);
+    const repoStates = ["repo:clean", "repo:changed", "repo:changed", "repo:changed"];
+    let repoStateIndex = 0;
+
+    const result = await runOrchestrator({
+      task: "start",
+      cwd,
+      configPath,
+      runtime: {
+        invokeAgent: invokeStub.invokeAgent,
+        askHumanInput: async () => "finish",
+        getRepoStateSignature: () => repoStates[repoStateIndex++] || repoStates[repoStates.length - 1],
+      },
+    });
+
+    assert.equal(result.status, "done");
+    assert.equal(result.hops, 3);
+    assert.deepEqual(invokeStub.calls, ["codex", "gemini", "codex"]);
   } finally {
     cleanupTempRepo(cwd);
   }
@@ -1361,19 +1491,13 @@ test("review gate allows review→done to pass through", async () => {
   try {
     const configPath = writeConfig(cwd, { no_progress_hops: 0 });
     const invokeStub = createInvokeStub([
-      // Step 1: claude routes to implement
-      {
-        contract_version: "1",
-        next_action: "implement",
-        message: "implement feature",
-      },
-      // Step 2: codex (implement) routes to review explicitly
+      // Step 1: codex (primary) routes to review
       {
         contract_version: "1",
         next_action: "review",
         message: "ready for review",
       },
-      // Step 3: gemini (review) goes done — should pass through (scope is review, not implement)
+      // Step 2: gemini (review) goes done — should pass through because the scope is review
       {
         contract_version: "1",
         next_action: "done",
@@ -1393,8 +1517,40 @@ test("review gate allows review→done to pass through", async () => {
     });
 
     assert.equal(result.status, "done");
-    assert.equal(result.hops, 3);
-    assert.deepEqual(invokeStub.calls, ["claude", "codex", "gemini"]);
+    assert.equal(result.hops, 2);
+    assert.deepEqual(invokeStub.calls, ["codex", "gemini"]);
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
+test("global /finish ends the run from a human gate", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, { no_progress_hops: 0, review_gate: false });
+    const invokeStub = createInvokeStub([
+      {
+        contract_version: "1",
+        next_action: "ask-human",
+        message: "need clarification",
+        questions: [{ id: "q1", text: "which environment?" }],
+      },
+    ]);
+
+    const result = await runOrchestrator({
+      task: "start",
+      cwd,
+      configPath,
+      runtime: {
+        invokeAgent: invokeStub.invokeAgent,
+        askHumanInput: async () => "/finish",
+        getRepoStateSignature: () => "same-state",
+      },
+    });
+
+    assert.equal(result.status, "done");
+    assert.equal(result.hops, 1);
+    assert.deepEqual(invokeStub.calls, ["codex"]);
   } finally {
     cleanupTempRepo(cwd);
   }
@@ -1403,9 +1559,9 @@ test("review gate allows review→done to pass through", async () => {
 test("pair return overrides the pair agent's own routing decision", async () => {
   const cwd = createTempRepo();
   try {
-    const configPath = writeConfig(cwd, { no_progress_hops: 0 });
+    const configPath = writeConfig(cwd, { no_progress_hops: 0, review_gate: false });
     const invokeStub = createInvokeStub([
-      // Step 1: claude invokes pair
+      // Step 1: codex invokes pair
       {
         contract_version: "1",
         next_action: "pair",
@@ -1417,7 +1573,7 @@ test("pair return overrides the pair agent's own routing decision", async () => 
         next_action: "review",
         message: "here is my analysis",
       },
-      // Step 3: back to claude (the invoking agent), not gemini
+      // Step 3: back to codex (the invoking agent), not gemini
       {
         contract_version: "1",
         next_action: "done",
@@ -1438,8 +1594,7 @@ test("pair return overrides the pair agent's own routing decision", async () => 
 
     assert.equal(result.status, "done");
     assert.equal(result.hops, 3);
-    // claude -> claude (pair target) -> claude (forced return)
-    assert.deepEqual(invokeStub.calls, ["claude", "claude", "claude"]);
+    assert.deepEqual(invokeStub.calls, ["codex", "claude", "codex"]);
   } finally {
     cleanupTempRepo(cwd);
   }

@@ -212,8 +212,8 @@ function isCommandAvailable(command: string): boolean {
   return false;
 }
 
-export function validateConfiguredAgentsAvailable(config: Config, firstAgent: AgentName): void {
-  const requiredAgents = new Set<AgentName>([firstAgent]);
+export function validateConfiguredAgentsAvailable(config: Config, primaryAgent: AgentName): void {
+  const requiredAgents = new Set<AgentName>([primaryAgent]);
   for (const target of Object.values(config.routing)) {
     if (isAgentName(target)) {
       requiredAgents.add(target);
@@ -234,7 +234,7 @@ export function validateConfiguredAgentsAvailable(config: Config, firstAgent: Ag
       [
         "Missing required agent CLI commands:",
         ...missing,
-        "Install the missing CLI, update first_agent/routing, or override the command via adapters.<agent>.",
+        "Install the missing CLI, update routing.primary/routing, or override the command via adapters.<agent>.",
       ].join("\n")
     );
   }

@@ -1,6 +1,6 @@
 import { Contract, NextAction } from "./types";
 
-const NEXT_ACTIONS = new Set<NextAction>(["plan", "implement", "review", "pair", "ask-human", "done"]);
+const NEXT_ACTIONS = new Set<NextAction>(["primary", "review", "pair", "ask-human", "done"]);
 
 function validateQuestion(question: unknown, index: number): void {
   if (question === null || typeof question !== "object" || Array.isArray(question)) {
@@ -35,12 +35,12 @@ export function validateContract(value: unknown): Contract {
   }
 
   if (typeof contract.next_action !== "string" || !NEXT_ACTIONS.has(contract.next_action as NextAction)) {
-    throw new Error("next_action must be one of: plan, implement, review, pair, ask-human, done");
+    throw new Error("next_action must be one of: primary, review, pair, ask-human, done");
   }
 
   if (contract.to !== undefined) {
     if (typeof contract.to !== "string" || !NEXT_ACTIONS.has(contract.to as NextAction)) {
-      throw new Error("to must be one of: plan, implement, review, pair, ask-human, done");
+      throw new Error("to must be one of: primary, review, pair, ask-human, done");
     }
   }
 

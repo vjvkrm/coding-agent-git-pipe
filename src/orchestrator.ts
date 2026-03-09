@@ -33,8 +33,8 @@ export const CONTRACT_SUFFIX = [
   "```json",
   "{",
   '  "contract_version": "1",',
-  '  "next_action": "plan | implement | review | pair | ask-human | done",',
-  '  "to": "(optional) plan | implement | review | pair | ask-human | done",',
+  '  "next_action": "primary | review | pair | ask-human | done",',
+  '  "to": "(optional) primary | review | pair | ask-human | done",',
   '  "message": "concise technical handoff for the next step",',
   '  "questions": [{"id":"q1","text":"Only for ask-human"}]',
   "}",
@@ -83,6 +83,7 @@ function formatConversationTurns(turns: ConversationTurn[]): string {
 function buildPromptBody(params: {
   message: string;
   speaker: PromptSpeaker;
+  stepScope: StepPromptScope;
   stepPrompts: string[];
   contextLabel: string;
   contextTurns: ConversationTurn[];
@@ -107,6 +108,30 @@ function buildPromptBody(params: {
     ].join("\n")
   );
 
+  const actionRulesByScope: Record<StepPromptScope, string[]> = {
+    primary: [
+      "- Stay in `primary` while you are still actively working.",
+      "- Use `pair` when you want advisory help from the configured pair agent.",
+      "- Use `review` when implementation or analysis is ready for signoff.",
+      "- Use `done` only when no further review is needed for the current repo state.",
+    ],
+    review: [
+      "- You are the review gate for the current repo state.",
+      "- Use `primary` to send concrete fixes or follow-up work back.",
+      "- Use `pair` only for extra advisory input; the run will return to this review thread.",
+      "- Use `done` only when the current state is approved to finish.",
+    ],
+    pair: [
+      "- Provide concise expert advice for the invoking step.",
+      "- Focus on diagnosis, options, and recommended next actions.",
+      "- Pair routing is fixed by the caller. Your `next_action` and `to` fields are ignored; only `message` is used.",
+      "- Return a handoff message for the invoking agent; do not attempt to choose global routing for the run.",
+      "- Set `next_action` to `done` and focus on making `message` useful for the caller.",
+      "- Your response will return to the invoking thread automatically.",
+    ],
+  };
+  sections.push(["Step routing guidance:", ...actionRulesByScope[params.stepScope]].join("\n"));
+
   sections.push(`Current handoff from ${params.speaker}:\n${params.message}`);
 
   if (params.contextTurns.length > 0) {
@@ -121,6 +146,7 @@ function buildPromptBody(params: {
 function buildInitialPromptBody(params: {
   message: string;
   speaker: PromptSpeaker;
+  stepScope: StepPromptScope;
   history: ConversationTurn[];
   stepPrompts: string[];
 }): string {
@@ -128,6 +154,7 @@ function buildInitialPromptBody(params: {
   return buildPromptBody({
     message: params.message,
     speaker: params.speaker,
+    stepScope: params.stepScope,
     stepPrompts: params.stepPrompts,
     contextLabel:
       "Recent conversation context (oldest first; use this for continuity and do not ask the human to repeat it unless necessary):",
@@ -138,6 +165,7 @@ function buildInitialPromptBody(params: {
 function buildResumePromptBody(params: {
   message: string;
   speaker: PromptSpeaker;
+  stepScope: StepPromptScope;
   history: ConversationTurn[];
   stepPrompts: string[];
   lastHistoryIndex: number;
@@ -146,6 +174,7 @@ function buildResumePromptBody(params: {
   return buildPromptBody({
     message: params.message,
     speaker: params.speaker,
+    stepScope: params.stepScope,
     stepPrompts: params.stepPrompts,
     contextLabel:
       "Conversation since this step last ran (oldest first; the existing session already has older context):",
@@ -166,20 +195,48 @@ function appendConversationTurn(
 }
 
 function resolveStepPromptScope(action: NextAction | undefined): StepPromptScope | null {
-  if (action === "plan" || action === "implement" || action === "review" || action === "pair") {
+  if (action === "primary" || action === "review" || action === "pair") {
     return action;
   }
 
   return null;
 }
 
-function resolveNextThreadKey(routedAction: NextAction | undefined, currentThreadKey: string): string {
-  if (routedAction === "pair") {
-    return `pair:${currentThreadKey}`;
+function buildHumanGateFooter(base: string | null = null): string {
+  const suffix = 'Reply with "/finish" to end the run immediately.';
+  return base && base.trim() !== "" ? `${base}\n${suffix}` : suffix;
+}
+
+function isGlobalFinishCommand(value: string): boolean {
+  return value.trim().toLowerCase() === "/finish";
+}
+
+function didRepoChangeSinceBaseline(
+  currentRepoState: string | null,
+  baselineRepoState: string | null
+): boolean | null {
+  if (currentRepoState === null || baselineRepoState === null) {
+    return null;
   }
 
-  const nextScope = resolveStepPromptScope(routedAction);
-  return nextScope || currentThreadKey;
+  return currentRepoState !== baselineRepoState;
+}
+
+function normalizePairContract(contract: Contract): Contract {
+  return {
+    contract_version: "1",
+    next_action: "done",
+    to: "done",
+    message: contract.message,
+  };
+}
+
+function isAgentTarget(target: TargetName): target is AgentName {
+  return target === "claude" || target === "codex" || target === "gemini";
+}
+
+function resolveNextThreadKey(target: TargetName, currentThreadKey: string): string {
+  return isAgentTarget(target) ? target : currentThreadKey;
 }
 
 function getOrCreateThreadState(
@@ -462,7 +519,17 @@ async function getContractWithRetry(params: {
 
 export async function runOrchestrator(input: RunInput): Promise<OrchestratorResult> {
   const cwd = input.cwd || process.cwd();
-  const config = loadConfig({ cwd, configPath: input.configPath || undefined });
+  const loadedConfig = loadConfig({ cwd, configPath: input.configPath || undefined });
+  const config: Config =
+    input.primaryAgent !== undefined && input.primaryAgent !== null
+      ? {
+          ...loadedConfig,
+          routing: {
+            ...loadedConfig.routing,
+            primary: input.primaryAgent,
+          },
+        }
+      : loadedConfig;
   const runId = randomUUID();
   const logger = createRunLogger({ cwd, config, runId });
   const lock = acquireRunLock({ cwd, config, runId });
@@ -486,17 +553,18 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
       ? (input.noProgressHops as number)
       : config.no_progress_hops;
 
-  let currentAgent: AgentName = input.firstAgent || config.first_agent;
+  let currentAgent: AgentName = config.routing.primary as AgentName;
   let currentMessage = input.task;
   let currentMessageSpeaker: PromptSpeaker = "human";
-  let currentStepPromptScope: StepPromptScope = "first_agent";
-  let currentThreadKey = "first_agent";
+  let currentStepPromptScope: StepPromptScope = "primary";
+  let currentThreadKey: string = currentAgent;
   let hopCount = 0;
   let activeStepId = 0;
   let signalHandled = false;
   let noProgressCount = 0;
   let pairReturn: PairReturnContext | null = null;
   let previousRepoState = await Promise.resolve(getRepoStateSignatureFn(cwd));
+  let lastReviewedRepoState = previousRepoState;
   const stepThreads = new Map<string, StepThreadState>();
   const conversationHistory: ConversationTurn[] = [
     {
@@ -530,7 +598,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
   console.log(`cwd=${cwd}`);
   console.log(`lock_file=${lock.lockPath}`);
   console.log(`log_file=${logger.logPath}`);
-  console.log(`first_agent=${currentAgent}`);
+  console.log(`primary_agent=${currentAgent}`);
   console.log(`max_hops=${maxHops}`);
   console.log(`agent_timeout_ms=${effectiveTimeout}`);
   console.log(`no_progress_hops=${noProgressHops}`);
@@ -538,7 +606,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
   logger.logEvent({
     type: "run_started",
     cwd,
-    first_agent: currentAgent,
+    primary_agent: currentAgent,
     max_hops: maxHops,
     max_invalid_contract_retries: maxInvalidContractRetries,
     timeout_override_ms: timeoutOverrideMs || null,
@@ -547,6 +615,23 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
     log_file: logger.logPath,
     repo_state_available: previousRepoState !== null,
   });
+
+  const finishRun = (stepId: number, message: string): OrchestratorResult => {
+    console.log("\n=== done ===");
+    console.log(message);
+    logger.logEvent({
+      type: "run_completed",
+      status: "done",
+      step_id: stepId,
+      message: clipText(message),
+    });
+    return {
+      runId,
+      hops: stepId,
+      status: "done",
+      logPath: logger.logPath,
+    };
+  };
 
   try {
     if (!input.runtime?.invokeAgent) {
@@ -575,6 +660,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
         ? buildResumePromptBody({
             message: currentMessage,
             speaker: currentMessageSpeaker,
+            stepScope: currentStepPromptScope,
             history: conversationHistory,
             stepPrompts: config.step_prompts[currentStepPromptScope],
             lastHistoryIndex: threadState.lastHistoryIndex,
@@ -582,6 +668,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
         : buildInitialPromptBody({
             message: currentMessage,
             speaker: currentMessageSpeaker,
+            stepScope: currentStepPromptScope,
             history: conversationHistory,
             stepPrompts: config.step_prompts[currentStepPromptScope],
           });
@@ -629,11 +716,15 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
 
         const contractFailurePayload =
           error instanceof ContractAcquisitionError && error.humanInputPayload
-            ? error.humanInputPayload
+            ? {
+                ...error.humanInputPayload,
+                footer: buildHumanGateFooter(error.humanInputPayload.footer || null),
+              }
             : {
                 message:
                   `Agent invocation/contract failed for ${currentAgent}: ${(error as Error).message}\n` +
                   `Provide next instruction for ${currentAgent}.`,
+                footer: buildHumanGateFooter(),
               };
         const humanResponse = await askHumanInputFn(contractFailurePayload);
 
@@ -650,6 +741,9 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
               : "agent-failure",
           response: clipText(humanResponse),
         });
+        if (isGlobalFinishCommand(humanResponse)) {
+          return finishRun(stepId, "Run finished by human via /finish.");
+        }
         if (error instanceof ContractAcquisitionError && error.directHumanRequest) {
           appendConversationTurn(conversationHistory, currentAgent, error.directHumanRequest);
         }
@@ -659,6 +753,10 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
         noProgressCount = 0;
         hopCount += 1;
         continue;
+      }
+
+      if (currentStepPromptScope === "pair" && pairReturn !== null) {
+        contract = normalizePairContract(contract);
       }
 
       threadState.sessionRef = resolvedSessionRef;
@@ -677,6 +775,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
 
         const humanResponse = await askHumanInputFn({
           message: `Routing error: ${(error as Error).message}\nProvide next instruction for ${currentAgent}.`,
+          footer: buildHumanGateFooter(),
         });
 
         if (humanResponse === "") {
@@ -689,6 +788,9 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
           reason: "routing-error",
           response: clipText(humanResponse),
         });
+        if (isGlobalFinishCommand(humanResponse)) {
+          return finishRun(stepId, "Run finished by human via /finish.");
+        }
         appendConversationTurn(conversationHistory, "human", humanResponse);
         currentMessage = humanResponse;
         currentMessageSpeaker = "human";
@@ -709,32 +811,46 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
       let routedAction = (contract.to || contract.next_action) as NextAction;
       let nextStepPromptScope: StepPromptScope =
         resolveStepPromptScope(routedAction) || currentStepPromptScope;
-      let nextThreadKey = resolveNextThreadKey(routedAction, currentThreadKey);
+      let nextThreadKey = resolveNextThreadKey(target, currentThreadKey);
+      const currentRepoState = await Promise.resolve(getRepoStateSignatureFn(cwd));
+      const repoChangedSinceLastReview = didRepoChangeSinceBaseline(
+        currentRepoState,
+        lastReviewedRepoState
+      );
 
-      // --- Review gate: intercept implement→done and redirect to review ---
+      // --- Review gate: intercept primary→done when repo state has changed since the last review ---
       if (
         config.review_gate &&
         routedAction === "done" &&
-        currentStepPromptScope === "implement"
+        currentStepPromptScope === "primary" &&
+        repoChangedSinceLastReview !== false
       ) {
-        console.log(`\n[review-gate] implement→done intercepted; redirecting to review`);
+        const reviewReason =
+          repoChangedSinceLastReview === null
+            ? "repo-state-unavailable"
+            : "repo-changed-since-review";
+        console.log(`\n[review-gate] primary→done intercepted; redirecting to review`);
         logger.logEvent({
           type: "review_gate_redirect",
           step_id: stepId,
           agent: currentAgent,
           original_action: "done",
           redirected_to: "review",
+          reason: reviewReason,
         });
         routedAction = "review";
         target = config.routing.review;
         nextStepPromptScope = "review";
-        nextThreadKey = resolveNextThreadKey("review", currentThreadKey);
+        nextThreadKey = resolveNextThreadKey(target, currentThreadKey);
       }
 
       if (target !== "stop" || routedAction === "done") {
         appendConversationTurn(conversationHistory, handoffSpeaker, contract.message);
       }
       threadState.lastHistoryIndex = conversationHistory.length;
+      if (currentStepPromptScope === "review" && currentRepoState !== null) {
+        lastReviewedRepoState = currentRepoState;
+      }
 
       // --- Pair return: force routing back to the invoking agent ---
       if (pairReturn !== null) {
@@ -769,7 +885,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
             message: contract.message,
             showMessage: false,
             footer:
-              'Reply with "finish" to end the run, or enter a follow-up message/question directly to continue with the same agent session.',
+              'Reply with "finish" or "/finish" to end the run, or enter a follow-up message/question directly to continue with the same agent session.',
             promptText: "human response awaited> ",
           });
 
@@ -778,27 +894,14 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
           }
 
           const normalizedDecision = decision.trim().toLowerCase();
-          if (normalizedDecision === "finish") {
-            console.log("\n=== done ===");
-            console.log(contract.message);
+          if (normalizedDecision === "finish" || isGlobalFinishCommand(decision)) {
             logger.logEvent({
               type: "done_gate_finish",
               step_id: stepId,
               agent: currentAgent,
               thread_key: currentThreadKey,
             });
-            logger.logEvent({
-              type: "run_completed",
-              status: "done",
-              step_id: stepId,
-              message: clipText(contract.message),
-            });
-            return {
-              runId,
-              hops: stepId,
-              status: "done",
-              logPath: logger.logPath,
-            };
+            return finishRun(stepId, contract.message);
           }
 
           let followUp = decision;
@@ -806,7 +909,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
             followUp = await askHumanInputFn({
               heading: "=== human response awaited ===",
               showMessage: false,
-              footer: "Enter the follow-up message or question for that agent.",
+              footer: buildHumanGateFooter("Enter the follow-up message or question for that agent."),
               promptText: "human response awaited> ",
             });
 
@@ -822,6 +925,9 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
             thread_key: currentThreadKey,
             response: clipText(followUp),
           });
+          if (isGlobalFinishCommand(followUp)) {
+            return finishRun(stepId, "Run finished by human via /finish.");
+          }
           appendConversationTurn(conversationHistory, "human", followUp);
           currentMessage = followUp;
           currentMessageSpeaker = "human";
@@ -830,20 +936,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
           continue;
         }
 
-        console.log("\n=== done ===");
-        console.log(contract.message);
-        logger.logEvent({
-          type: "run_completed",
-          status: "done",
-          step_id: stepId,
-          message: clipText(contract.message),
-        });
-        return {
-          runId,
-          hops: stepId,
-          status: "done",
-          logPath: logger.logPath,
-        };
+        return finishRun(stepId, contract.message);
       }
 
       if (target === "human") {
@@ -852,6 +945,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
           message: contract.message,
           questions: contract.questions,
           showMessage: false,
+          footer: buildHumanGateFooter(),
           promptText: "human response awaited> ",
         });
 
@@ -865,6 +959,9 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
           reason: (contract.to || contract.next_action) === "ask-human" ? "ask-human" : `routed-to-human:${contract.to || contract.next_action}`,
           response: clipText(response),
         });
+        if (isGlobalFinishCommand(response)) {
+          return finishRun(stepId, "Run finished by human via /finish.");
+        }
         appendConversationTurn(conversationHistory, "human", response);
         currentMessage = response;
         currentMessageSpeaker = "human";
@@ -899,7 +996,6 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
       }
 
       if (noProgressHops > 0) {
-        const currentRepoState = await Promise.resolve(getRepoStateSignatureFn(cwd));
         if (currentRepoState !== null && previousRepoState !== null) {
           noProgressCount = currentRepoState === previousRepoState ? noProgressCount + 1 : 0;
           logger.logEvent({
@@ -913,6 +1009,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
               message:
                 `No repository changes detected for ${noProgressCount} consecutive agent steps. ` +
                 "Provide guidance for the next agent.",
+              footer: buildHumanGateFooter(),
             });
 
             if (response === "") {
@@ -925,6 +1022,9 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
               reason: "no-progress",
               response: clipText(response),
             });
+            if (isGlobalFinishCommand(response)) {
+              return finishRun(stepId, "Run finished by human via /finish.");
+            }
             appendConversationTurn(conversationHistory, "human", response);
             currentAgent = target as AgentName;
             currentMessage = response;

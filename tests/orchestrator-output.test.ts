@@ -20,6 +20,6 @@ test("createPrefixedWriter prefixes each logical line once", () => {
 });
 
 test("formatTerminalPrefix includes both agent and step scope", () => {
-  assert.equal(formatTerminalPrefix("codex", "plan"), "[codex][plan] ");
+  assert.equal(formatTerminalPrefix("codex", "primary"), "[codex][primary] ");
   assert.equal(formatTerminalPrefix("claude", "pair", "stderr"), "[claude][pair][stderr] ");
 });

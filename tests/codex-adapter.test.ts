@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
+  findCodexSessionRefFromLocalState,
   normalizeCodexJsonOutput,
+  resolveCodexStateDbPath,
   resolveCodexResumeCommand,
   resolveCodexStreamingCommand,
 } from "../src/adapters/codex";
@@ -10,15 +15,13 @@ import { Config } from "../src/types";
 function makeConfig(overrides: Partial<Config> = {}): Config {
   return {
     routing: {
-      plan: "claude",
-      implement: "codex",
+      primary: "codex",
       review: "gemini",
       pair: "claude",
       "ask-human": "human",
       done: "stop",
     },
     max_hops: 10,
-    first_agent: "claude",
     agent_timeout_ms: 1800000,
     max_invalid_contract_retries: 1,
     no_progress_hops: 0,
@@ -29,15 +32,21 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
     adapter_args: {},
     adapters: {},
     step_prompts: {
-      first_agent: [],
-      plan: [],
-      implement: [],
+      primary: [],
       review: [],
       pair: [],
     },
     review_gate: true,
     ...overrides,
   };
+}
+
+function createTempDir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "agent-pipe-codex-"));
+}
+
+function cleanupTempDir(dir: string): void {
+  fs.rmSync(dir, { recursive: true, force: true });
 }
 
 test("normalizeCodexJsonOutput extracts the last agent message", () => {
@@ -132,5 +141,42 @@ test("resolveCodexResumeCommand preserves adapter_args on resume", () => {
     "--full-auto",
     "-m",
     "gpt-5.4",
+    "--json",
   ]);
+});
+
+test("resolveCodexStateDbPath chooses the highest state db version", () => {
+  const dir = createTempDir();
+  try {
+    fs.writeFileSync(path.join(dir, "state_4.sqlite"), "");
+    fs.writeFileSync(path.join(dir, "state_12.sqlite"), "");
+    fs.writeFileSync(path.join(dir, "state_7.sqlite"), "");
+
+    assert.equal(resolveCodexStateDbPath(dir), path.join(dir, "state_12.sqlite"));
+  } finally {
+    cleanupTempDir(dir);
+  }
+});
+
+test("findCodexSessionRefFromLocalState queries the newest thread id for the cwd and time window", () => {
+  let seenDbPath = "";
+  let seenQuery = "";
+  const sessionRef = findCodexSessionRefFromLocalState({
+    cwd: "/tmp/example-repo",
+    startedAtMs: 1_700_000_000_000,
+    endedAtMs: 1_700_000_030_000,
+    stateDbPath: "/tmp/state_5.sqlite",
+    sqliteQueryFn: (dbPath, query) => {
+      seenDbPath = dbPath;
+      seenQuery = query;
+      return "thread-123\n";
+    },
+  });
+
+  assert.equal(sessionRef, "thread-123");
+  assert.equal(seenDbPath, "/tmp/state_5.sqlite");
+  assert.match(seenQuery, /FROM threads/);
+  assert.match(seenQuery, /WHERE cwd = '\/tmp\/example-repo'/);
+  assert.match(seenQuery, /updated_at >= 1699999995/);
+  assert.match(seenQuery, /updated_at <= 1700000035/);
 });

@@ -11,15 +11,13 @@ import { Config } from "../src/types";
 function makeConfig(overrides: Partial<Config> = {}): Config {
   return {
     routing: {
-      plan: "claude",
-      implement: "codex",
+      primary: "codex",
       review: "gemini",
       pair: "claude",
       "ask-human": "human",
       done: "stop",
     },
     max_hops: 10,
-    first_agent: "claude",
     agent_timeout_ms: 1800000,
     max_invalid_contract_retries: 1,
     no_progress_hops: 0,
@@ -30,9 +28,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
     adapter_args: {},
     adapters: {},
     step_prompts: {
-      first_agent: [],
-      plan: [],
-      implement: [],
+      primary: [],
       review: [],
       pair: [],
     },

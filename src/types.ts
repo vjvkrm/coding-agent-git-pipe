@@ -1,7 +1,7 @@
 export type AgentName = "claude" | "codex" | "gemini";
 export type TargetName = AgentName | "human" | "stop";
-export type NextAction = "plan" | "implement" | "review" | "pair" | "ask-human" | "done";
-export type StepPromptScope = "first_agent" | "plan" | "implement" | "review" | "pair";
+export type NextAction = "primary" | "review" | "pair" | "ask-human" | "done";
+export type StepPromptScope = "primary" | "review" | "pair";
 
 export interface Question {
   id: string;
@@ -19,7 +19,6 @@ export interface Contract {
 export interface Config {
   routing: Record<NextAction, TargetName>;
   max_hops: number;
-  first_agent: AgentName;
   agent_timeout_ms: number;
   max_invalid_contract_retries: number;
   no_progress_hops: number;
@@ -71,7 +70,7 @@ export interface OrchestratorResult {
 
 export interface RunInput {
   task: string;
-  firstAgent?: AgentName | null;
+  primaryAgent?: AgentName | null;
   maxHops?: number | null;
   timeoutMs?: number | null;
   maxInvalidContractRetries?: number | null;

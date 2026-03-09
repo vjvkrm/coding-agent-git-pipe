@@ -17,13 +17,11 @@ test("loadConfig provides empty step prompt arrays by default", () => {
   const cwd = createTempDir();
   try {
     const config = loadConfig({ cwd });
-    assert.equal(config.max_hops, 20);
+    assert.equal(config.max_hops, 50);
     assert.equal(config.review_gate, true);
     assert.deepEqual(config.adapter_args, {});
     assert.deepEqual(config.step_prompts, {
-      first_agent: [],
-      plan: [],
-      implement: [],
+      primary: [],
       review: [],
       pair: [],
     });
@@ -81,9 +79,7 @@ test("loadConfig rejects unknown step prompt scopes", () => {
       path.join(cwd, ".agentpipe.json"),
       JSON.stringify({
         step_prompts: {
-          first_agent: [],
-          plan: [],
-          implement: [],
+          primary: [],
           review: [],
           entry: ["not allowed"],
         },

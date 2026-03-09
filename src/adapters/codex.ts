@@ -1,4 +1,7 @@
-import { basename } from "node:path";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path, { basename } from "node:path";
 import { AdapterInvocation, Config, InvokeAgentOptions } from "../types";
 import {
   extractSessionRefFromJsonLines,
@@ -9,6 +12,8 @@ import {
 } from "./base";
 
 const CODEX_STREAM_ARGS = ["--json"];
+const CODEX_STATE_DB_PATTERN = /^state_(\d+)\.sqlite$/;
+const CODEX_SESSION_LOOKUP_MARGIN_SECONDS = 5;
 
 function parseCodexJsonLine(line: string): unknown | null {
   const trimmed = line.trim();
@@ -57,6 +62,86 @@ function isCodexCliCommand(commandParts: string[]): boolean {
   return commandParts.length > 0 && basename(commandParts[0]).toLowerCase() === "codex";
 }
 
+function resolveCodexHome(): string {
+  return process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+}
+
+export function resolveCodexStateDbPath(codexHome = resolveCodexHome()): string | null {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(codexHome);
+  } catch (_error) {
+    return null;
+  }
+
+  const candidates = entries
+    .map((name) => {
+      const match = CODEX_STATE_DB_PATTERN.exec(name);
+      if (!match) {
+        return null;
+      }
+
+      return {
+        path: path.join(codexHome, name),
+        version: Number(match[1]),
+      };
+    })
+    .filter((value): value is { path: string; version: number } => value !== null)
+    .sort((a, b) => b.version - a.version);
+
+  return candidates[0]?.path || null;
+}
+
+function sqlStringLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+type SqliteQueryFn = (dbPath: string, query: string) => string;
+
+function defaultSqliteQuery(dbPath: string, query: string): string {
+  return execFileSync("sqlite3", [dbPath, query], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+}
+
+export function findCodexSessionRefFromLocalState(params: {
+  cwd: string;
+  startedAtMs: number;
+  endedAtMs: number;
+  sqliteQueryFn?: SqliteQueryFn;
+  stateDbPath?: string | null;
+}): string | null {
+  const stateDbPath =
+    params.stateDbPath !== undefined ? params.stateDbPath : resolveCodexStateDbPath();
+  if (!stateDbPath) {
+    return null;
+  }
+
+  const lowerBound = Math.max(
+    0,
+    Math.floor(params.startedAtMs / 1000) - CODEX_SESSION_LOOKUP_MARGIN_SECONDS
+  );
+  const upperBound =
+    Math.ceil(params.endedAtMs / 1000) + CODEX_SESSION_LOOKUP_MARGIN_SECONDS;
+  const query = [
+    "SELECT id",
+    "FROM threads",
+    `WHERE cwd = ${sqlStringLiteral(params.cwd)}`,
+    `AND updated_at >= ${lowerBound}`,
+    `AND updated_at <= ${upperBound}`,
+    "ORDER BY updated_at DESC",
+    "LIMIT 1;",
+  ].join(" ");
+
+  try {
+    const result = (params.sqliteQueryFn || defaultSqliteQuery)(stateDbPath, query).trim();
+    return result !== "" ? result : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
 export function resolveCodexStreamingCommand(config: Config): string[] | null {
   const commandParts = resolveAdapterCommand("codex", config);
   if (!isCodexCliCommand(commandParts)) {
@@ -72,29 +157,16 @@ export function resolveCodexResumeCommand(config: Config, sessionRef: string): s
     return null;
   }
 
-  return [commandParts[0], "exec", "resume", sessionRef, ...commandParts.slice(2)];
+  const resumeCommand = [commandParts[0], "exec", "resume", sessionRef, ...commandParts.slice(2)];
+  return resumeCommand.includes("--json") ? resumeCommand : [...resumeCommand, ...CODEX_STREAM_ARGS];
 }
 
-export function invokeCodex(
+function runCodexStreamingCommand(
+  commandParts: string[],
   prompt: string,
-  options: InvokeAgentOptions
+  options: InvokeAgentOptions,
+  existingSessionRef: string | null = null
 ): Promise<AdapterInvocation> {
-  if (options.sessionRef) {
-    const resumeCommand = resolveCodexResumeCommand(options.config, options.sessionRef);
-    if (resumeCommand === null) {
-      return runAdapter("codex", prompt, options);
-    }
-
-    return runAdapterCommand("codex", resumeCommand, prompt, options).then((invocation) => ({
-      ...invocation,
-      sessionRef: options.sessionRef,
-    }));
-  }
-
-  const commandParts = resolveCodexStreamingCommand(options.config);
-  if (commandParts === null) {
-    return runAdapter("codex", prompt, options);
-  }
   const command = commandParts[0];
   const args = [...commandParts.slice(1), prompt];
   const startedAt = Date.now();
@@ -188,6 +260,18 @@ export function invokeCodex(
         return;
       }
 
+      const endedAt = Date.now();
+      const sessionRef =
+        extractSessionRefFromJsonLines(rawStdout) ||
+        existingSessionRef ||
+        (commandParts.includes("--ephemeral")
+          ? null
+          : findCodexSessionRefFromLocalState({
+              cwd: options.cwd,
+              startedAtMs: startedAt,
+              endedAtMs: endedAt,
+            }));
+
       resolve({
         agent: "codex",
         command: commandParts,
@@ -196,9 +280,29 @@ export function invokeCodex(
         stdout,
         stderr,
         combined: `${stdout}${stderr}`,
-        durationMs: Date.now() - startedAt,
-        sessionRef: extractSessionRefFromJsonLines(rawStdout),
+        durationMs: endedAt - startedAt,
+        sessionRef,
       });
     });
   });
+}
+
+export function invokeCodex(
+  prompt: string,
+  options: InvokeAgentOptions
+): Promise<AdapterInvocation> {
+  if (options.sessionRef) {
+    const resumeCommand = resolveCodexResumeCommand(options.config, options.sessionRef);
+    if (resumeCommand === null) {
+      return runAdapter("codex", prompt, options);
+    }
+
+    return runCodexStreamingCommand(resumeCommand, prompt, options, options.sessionRef);
+  }
+
+  const commandParts = resolveCodexStreamingCommand(options.config);
+  if (commandParts === null) {
+    return runAdapter("codex", prompt, options);
+  }
+  return runCodexStreamingCommand(commandParts, prompt, options);
 }
