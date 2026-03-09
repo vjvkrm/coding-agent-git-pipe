@@ -97,6 +97,32 @@ function createInvokeStub(queue: QueueItem[]) {
   };
 }
 
+async function captureProcessOutput<T>(
+  run: () => Promise<T>
+): Promise<{ result: T; stdout: string; stderr: string }> {
+  const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+  const originalStderrWrite = process.stderr.write.bind(process.stderr);
+  let stdout = "";
+  let stderr = "";
+
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    stdout += typeof chunk === "string" ? chunk : chunk.toString();
+    return true;
+  }) as typeof process.stdout.write;
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    stderr += typeof chunk === "string" ? chunk : chunk.toString();
+    return true;
+  }) as typeof process.stderr.write;
+
+  try {
+    const result = await run();
+    return { result, stdout, stderr };
+  } finally {
+    process.stdout.write = originalStdoutWrite as typeof process.stdout.write;
+    process.stderr.write = originalStderrWrite as typeof process.stderr.write;
+  }
+}
+
 test("orchestrator runs primary->review->done", async () => {
   const cwd = createTempRepo();
   try {
@@ -564,6 +590,41 @@ test("orchestrator retries once on invalid contract output", async () => {
     assert.equal(result.status, "done");
     assert.equal(result.hops, 1);
     assert.equal(invokeStub.calls.length, 2);
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
+test("orchestrator prints the parsed contract message when streamed output is silent", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, {
+      no_progress_hops: 0,
+      review_gate: false,
+    });
+    const invokeStub = createInvokeStub([
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "visible fallback summary",
+      },
+    ]);
+
+    const captured = await captureProcessOutput(() =>
+      runOrchestrator({
+        task: "start",
+        cwd,
+        configPath,
+        runtime: {
+          invokeAgent: invokeStub.invokeAgent,
+          askHumanInput: async () => "finish",
+          getRepoStateSignature: () => null,
+        },
+      })
+    );
+
+    assert.equal(captured.result.status, "done");
+    assert.match(captured.stdout, /\[codex\]\[primary\] visible fallback summary/);
   } finally {
     cleanupTempRepo(cwd);
   }
