@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { AgentName, Config, NextAction, StepPromptScope, TargetName } from "./types";
+import { AgentName, Config, DiscussionConfig, NextAction, StepPromptScope, TargetName } from "./types";
 
 const ALLOWED_TARGETS = new Set<TargetName>(["claude", "codex", "gemini", "human", "stop"]);
 const ALLOWED_ACTIONS = new Set<NextAction>(["primary", "review", "pair", "ask-human", "done"]);
@@ -31,6 +31,13 @@ export const DEFAULT_CONFIG: Config = {
     pair: [],
   },
   review_gate: true,
+  discussion: {
+    enabled: false,
+    participants: [],
+    max_rounds: 3,
+    require_consensus: true,
+  },
+  max_review_iterations: 3,
 };
 
 export function createDefaultConfig(): Config {
@@ -217,6 +224,36 @@ function validateStepPrompts(config: Config, candidatePath: string): void {
   }
 }
 
+function validateDiscussion(config: Config, candidatePath: string): void {
+  if (!isPlainObject(config.discussion)) {
+    throw new Error(`Invalid discussion in ${candidatePath}; expected an object`);
+  }
+
+  if (typeof config.discussion.enabled !== "boolean") {
+    throw new Error(`Invalid discussion.enabled in ${candidatePath}; expected a boolean`);
+  }
+
+  if (!Array.isArray(config.discussion.participants)) {
+    throw new Error(`Invalid discussion.participants in ${candidatePath}; expected an array`);
+  }
+
+  for (const [index, participant] of config.discussion.participants.entries()) {
+    if (typeof participant !== "string" || !ALLOWED_AGENTS.has(participant as AgentName)) {
+      throw new Error(
+        `Invalid discussion.participants[${index}] in ${candidatePath}; expected claude, codex, or gemini`
+      );
+    }
+  }
+
+  if (!Number.isInteger(config.discussion.max_rounds) || config.discussion.max_rounds <= 0) {
+    throw new Error(`Invalid discussion.max_rounds in ${candidatePath}; expected positive integer`);
+  }
+
+  if (typeof config.discussion.require_consensus !== "boolean") {
+    throw new Error(`Invalid discussion.require_consensus in ${candidatePath}; expected a boolean`);
+  }
+}
+
 export function loadConfig(options: { cwd?: string; configPath?: string | null } = {}): Config {
   const cwd = options.cwd || process.cwd();
   const candidatePath = options.configPath || path.join(cwd, ".agentpipe.json");
@@ -247,6 +284,12 @@ export function loadConfig(options: { cwd?: string; configPath?: string | null }
 
   if (typeof config.review_gate !== "boolean") {
     throw new Error(`Invalid review_gate in ${candidatePath}; expected a boolean`);
+  }
+
+  validateDiscussion(config, candidatePath);
+
+  if (!Number.isInteger(config.max_review_iterations) || config.max_review_iterations <= 0) {
+    throw new Error(`Invalid max_review_iterations in ${candidatePath}; expected positive integer`);
   }
 
   return config;

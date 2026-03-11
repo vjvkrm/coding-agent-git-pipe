@@ -51,6 +51,13 @@ function writeConfig(cwd: string, overrides: Partial<Config> = {}): string {
       pair: [],
     },
     review_gate: true,
+    discussion: {
+      enabled: false,
+      participants: [],
+      max_rounds: 3,
+      require_consensus: true,
+    },
+    max_review_iterations: 3,
     ...overrides,
   };
 
@@ -1656,6 +1663,267 @@ test("pair return overrides the pair agent's own routing decision", async () => 
     assert.equal(result.status, "done");
     assert.equal(result.hops, 3);
     assert.deepEqual(invokeStub.calls, ["codex", "claude", "codex"]);
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
+// --- Review iteration tests ---
+
+test("review_verdict request-changes routes back to primary automatically", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, { no_progress_hops: 0 });
+    const invokeStub = createInvokeStub([
+      // Step 1: codex implements
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "auth implemented",
+      },
+      // Step 2: gemini reviews — requests changes (review gate redirected here)
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "Missing error handling in auth middleware",
+        review_verdict: "request-changes",
+        review_comments: [
+          { file: "src/auth.ts", line: 15, comment: "Missing null check on token" },
+        ],
+      },
+      // Step 3: codex fixes (auto-routed back from review iteration)
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "Fixed null check",
+      },
+      // Step 4: gemini re-reviews — approves (review gate intercepts again)
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "Looks good now",
+        review_verdict: "approve",
+      },
+    ]);
+
+    const result = await runOrchestrator({
+      task: "start",
+      cwd,
+      configPath,
+      runtime: {
+        invokeAgent: invokeStub.invokeAgent,
+        askHumanInput: async () => "finish",
+        getRepoStateSignature: () => null,
+      },
+    });
+
+    assert.equal(result.status, "done");
+    assert.deepEqual(invokeStub.calls, ["codex", "gemini", "codex", "gemini"]);
+    // Verify review comments were formatted into the handoff message to primary
+    assert.match(invokeStub.prompts[2], /Changes Requested/);
+    assert.match(invokeStub.prompts[2], /Missing null check on token/);
+    assert.match(invokeStub.prompts[2], /src\/auth\.ts:15/);
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
+test("review iteration respects max_review_iterations limit", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, {
+      no_progress_hops: 0,
+      max_review_iterations: 1,
+    });
+    const invokeStub = createInvokeStub([
+      // Step 1: codex implements
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "first attempt",
+      },
+      // Step 2: gemini requests changes (iteration 1 of 1)
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "needs fix",
+        review_verdict: "request-changes",
+        review_comments: [{ comment: "Fix bug" }],
+      },
+      // Step 3: codex fixes
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "fixed",
+      },
+      // Step 4: gemini requests changes again — but max iterations reached, so this should NOT redirect back
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "still not perfect but acceptable",
+        review_verdict: "request-changes",
+        review_comments: [{ comment: "Minor style issue" }],
+      },
+    ]);
+
+    const result = await runOrchestrator({
+      task: "start",
+      cwd,
+      configPath,
+      runtime: {
+        invokeAgent: invokeStub.invokeAgent,
+        askHumanInput: async () => "finish",
+        getRepoStateSignature: () => null,
+      },
+    });
+
+    assert.equal(result.status, "done");
+    // After max iterations, review→done goes through to the done gate (not back to primary)
+    assert.deepEqual(invokeStub.calls, ["codex", "gemini", "codex", "gemini"]);
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
+test("review_verdict approve resets iteration count", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, {
+      no_progress_hops: 0,
+      max_review_iterations: 2,
+    });
+    const invokeStub = createInvokeStub([
+      // Round 1: implement -> review -> request-changes -> fix -> review -> approve
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "impl round 1",
+      },
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "fix needed",
+        review_verdict: "request-changes",
+        review_comments: [{ comment: "Bug" }],
+      },
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "fixed",
+      },
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "approved",
+        review_verdict: "approve",
+      },
+    ]);
+
+    const result = await runOrchestrator({
+      task: "start",
+      cwd,
+      configPath,
+      runtime: {
+        invokeAgent: invokeStub.invokeAgent,
+        askHumanInput: async () => "finish",
+        getRepoStateSignature: () => null,
+      },
+    });
+
+    assert.equal(result.status, "done");
+    assert.deepEqual(invokeStub.calls, ["codex", "gemini", "codex", "gemini"]);
+  } finally {
+    cleanupTempRepo(cwd);
+  }
+});
+
+// --- Discussion integration test ---
+
+test("discuss flag enables plan & discuss phase before implementation", async () => {
+  const cwd = createTempRepo();
+  try {
+    const configPath = writeConfig(cwd, {
+      no_progress_hops: 0,
+      review_gate: false,
+    });
+
+    const allAgentCalls: { agent: string; prompt: string }[] = [];
+    let callIndex = 0;
+    const responses: Contract[] = [
+      // Plan phase: codex proposes
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "Plan to add auth",
+        proposal: {
+          summary: "Add JWT auth",
+          approach: "Create middleware",
+          files: ["src/auth.ts"],
+        },
+        confidence: 0.9,
+      },
+      // Discuss: gemini agrees
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "Good approach",
+        sentiment: "agree",
+        concerns: [],
+        confidence: 0.85,
+      },
+      // Discuss: claude agrees
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "Agreed",
+        sentiment: "agree",
+        concerns: [],
+        confidence: 0.9,
+      },
+      // Implementation: codex implements
+      {
+        contract_version: "1",
+        next_action: "done",
+        message: "Auth implemented",
+      },
+    ];
+
+    const result = await runOrchestrator({
+      task: "Add JWT authentication",
+      discuss: true,
+      cwd,
+      configPath,
+      runtime: {
+        invokeAgent: async (agent, prompt, options) => {
+          allAgentCalls.push({ agent, prompt });
+          const contract = responses[callIndex++];
+          const output = `\`\`\`json\n${JSON.stringify(contract)}\n\`\`\``;
+          return {
+            agent,
+            command: ["test"],
+            args: [],
+            timeoutMs: 30000,
+            stdout: output,
+            stderr: "",
+            combined: output,
+            durationMs: 100,
+          };
+        },
+        askHumanInput: async () => "finish",
+        getRepoStateSignature: () => "same-state",
+      },
+    });
+
+    assert.equal(result.status, "done");
+    // 3 discussion hops + 1 implementation hop = 4 total
+    assert.equal(result.hops, 4);
+    // Plan: codex, Discuss: gemini + claude, Implement: codex
+    assert.deepEqual(
+      allAgentCalls.map((c) => c.agent),
+      ["codex", "gemini", "claude", "codex"]
+    );
+    // Implementation prompt should contain the approved plan
+    assert.match(allAgentCalls[3].prompt, /Approved Implementation Plan/);
   } finally {
     cleanupTempRepo(cwd);
   }

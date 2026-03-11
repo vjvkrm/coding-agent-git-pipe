@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.1.0 - 2026-03-11
+
+### Added
+- **Plan & discuss phase**: Agents now discuss and agree on an approach before implementing. Primary proposes, participants review with `sentiment` and `concerns`, iterate until consensus or human escalation. Enable with `--discuss` flag or `discussion.enabled` in config.
+- **Iterative code review**: Reviewers can return `review_verdict: "request-changes"` with `review_comments` containing specific `file`, `line`, and `comment` for each issue. The orchestrator auto-routes back to primary for fixes, then re-reviews — up to `max_review_iterations` cycles.
+- **Contract v2 fields** (all optional, backward-compatible):
+  - `sentiment`: agree | disagree | partial | neutral
+  - `concerns`: array of technical concerns
+  - `proposal`: { summary, approach, files? }
+  - `review_verdict`: approve | request-changes | reject
+  - `review_comments`: [{ file?, line?, comment }]
+  - `confidence`: 0-1 score
+- **Config**: `discussion` object (`enabled`, `participants`, `max_rounds`, `require_consensus`), `max_review_iterations`.
+- **CLI**: `--discuss` flag to enable discussion from the command line.
+- **New module**: `src/discussion.ts` — plan, discuss, consensus checking, revision loop, human escalation.
+- **New JSONL events**: `discussion_phase_started`, `discussion_phase_completed`, `plan_phase_started`, `plan_phase_completed`, `discussion_round_started`, `discussion_feedback`, `discussion_consensus`, `discussion_deadlock`, `proposal_revision_started`, `proposal_revised`, `review_iteration_redirect`, `review_approved`.
+- **24 new tests**: contract v2 field validation (14), discussion engine (6), review iteration (3), discussion integration (1).
+
+### Changed
+- Review step prompt guidance now instructs agents to include `review_verdict` and `review_comments` in their contracts.
+- `CONTRACT_SUFFIX` now shows optional `review_verdict` and `review_comments` fields.
+
 ## 1.0.1 - 2026-03-09
 
 ### Changed

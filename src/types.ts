@@ -2,10 +2,24 @@ export type AgentName = "claude" | "codex" | "gemini";
 export type TargetName = AgentName | "human" | "stop";
 export type NextAction = "primary" | "review" | "pair" | "ask-human" | "done";
 export type StepPromptScope = "primary" | "review" | "pair";
+export type Sentiment = "agree" | "disagree" | "partial" | "neutral";
+export type ReviewVerdict = "approve" | "request-changes" | "reject";
 
 export interface Question {
   id: string;
   text: string;
+}
+
+export interface Proposal {
+  summary: string;
+  approach: string;
+  files?: string[];
+}
+
+export interface ReviewComment {
+  file?: string;
+  line?: number;
+  comment: string;
 }
 
 export interface Contract {
@@ -14,6 +28,20 @@ export interface Contract {
   to?: NextAction;
   message: string;
   questions?: Question[];
+  // v2 fields (optional, phase-dependent)
+  sentiment?: Sentiment;
+  concerns?: string[];
+  proposal?: Proposal;
+  review_verdict?: ReviewVerdict;
+  review_comments?: ReviewComment[];
+  confidence?: number;
+}
+
+export interface DiscussionConfig {
+  enabled: boolean;
+  participants: AgentName[];
+  max_rounds: number;
+  require_consensus: boolean;
 }
 
 export interface Config {
@@ -30,6 +58,9 @@ export interface Config {
   adapters: Partial<Record<AgentName, string[]>>;
   step_prompts: Record<StepPromptScope, string[]>;
   review_gate: boolean;
+  // v2 fields
+  discussion: DiscussionConfig;
+  max_review_iterations: number;
 }
 
 export interface InvokeAgentOptions {
@@ -71,6 +102,7 @@ export interface OrchestratorResult {
 export interface RunInput {
   task: string;
   primaryAgent?: AgentName | null;
+  discuss?: boolean | null;
   maxHops?: number | null;
   timeoutMs?: number | null;
   maxInvalidContractRetries?: number | null;

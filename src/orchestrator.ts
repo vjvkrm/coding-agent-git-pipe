@@ -23,6 +23,10 @@ import {
   StepPromptScope,
   TargetName,
 } from "./types";
+import {
+  runPlanAndDiscuss,
+  inferDiscussionParticipants,
+} from "./discussion";
 
 export const CONTRACT_SUFFIX = [
   "---",
@@ -36,7 +40,9 @@ export const CONTRACT_SUFFIX = [
   '  "next_action": "primary | review | pair | ask-human | done",',
   '  "to": "(optional) primary | review | pair | ask-human | done",',
   '  "message": "concise technical handoff for the next step",',
-  '  "questions": [{"id":"q1","text":"Only for ask-human"}]',
+  '  "questions": [{"id":"q1","text":"Only for ask-human"}],',
+  '  "review_verdict": "(optional, review step only) approve | request-changes",',
+  '  "review_comments": [{"file":"path/to/file","line":42,"comment":"issue description"}]',
   "}",
   "```",
 ].join("\n");
@@ -117,6 +123,8 @@ function buildPromptBody(params: {
     ],
     review: [
       "- You are the review gate for the current repo state.",
+      "- Include `review_verdict` in your contract: `approve` if code is ready to ship, `request-changes` if fixes are needed.",
+      "- When requesting changes, include `review_comments` array with specific `file`, `line`, and `comment` for each issue found.",
       "- Use `primary` to send concrete fixes or follow-up work back.",
       "- Use `pair` only for extra advisory input; the run will return to this review thread.",
       "- Use `done` only when the current state is approved to finish.",
@@ -369,6 +377,29 @@ export function formatTerminalPrefix(
   return `[${agent}][${stepScope}] `;
 }
 
+function formatReviewFeedback(contract: Contract): string {
+  const parts: string[] = [];
+  parts.push("## Review Feedback — Changes Requested\n");
+  parts.push(contract.message);
+
+  if (contract.review_comments && contract.review_comments.length > 0) {
+    parts.push("\n### Specific Issues:\n");
+    for (const comment of contract.review_comments) {
+      const location = comment.file
+        ? comment.line !== undefined
+          ? `${comment.file}:${comment.line}`
+          : comment.file
+        : "(general)";
+      parts.push(`- **${location}**: ${comment.comment}`);
+    }
+  }
+
+  parts.push(
+    "\nAddress all review comments above, then route to `review` for re-review."
+  );
+  return parts.join("\n");
+}
+
 function parseAndValidate(output: string): Contract {
   const parsed = parseContractOutput(output);
   return validateContract(parsed);
@@ -530,16 +561,19 @@ async function getContractWithRetry(params: {
 export async function runOrchestrator(input: RunInput): Promise<OrchestratorResult> {
   const cwd = input.cwd || process.cwd();
   const loadedConfig = loadConfig({ cwd, configPath: input.configPath || undefined });
-  const config: Config =
-    input.primaryAgent !== undefined && input.primaryAgent !== null
-      ? {
-          ...loadedConfig,
-          routing: {
-            ...loadedConfig.routing,
-            primary: input.primaryAgent,
-          },
-        }
-      : loadedConfig;
+  let config: Config = loadedConfig;
+  if (input.primaryAgent !== undefined && input.primaryAgent !== null) {
+    config = {
+      ...config,
+      routing: { ...config.routing, primary: input.primaryAgent },
+    };
+  }
+  if (input.discuss === true) {
+    config = {
+      ...config,
+      discussion: { ...config.discussion, enabled: true },
+    };
+  }
   const runId = randomUUID();
   const logger = createRunLogger({ cwd, config, runId });
   const lock = acquireRunLock({ cwd, config, runId });
@@ -575,6 +609,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
   let pairReturn: PairReturnContext | null = null;
   let previousRepoState = await Promise.resolve(getRepoStateSignatureFn(cwd));
   let lastReviewedRepoState = previousRepoState;
+  let reviewIterationCount = 0;
   const stepThreads = new Map<string, StepThreadState>();
   const conversationHistory: ConversationTurn[] = [
     {
@@ -646,6 +681,79 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
   try {
     if (!input.runtime?.invokeAgent) {
       validateConfiguredAgentsAvailable(config, currentAgent);
+    }
+
+    // --- Plan & Discussion phase (before implementation) ---
+    if (config.discussion.enabled) {
+      const discussionParticipants =
+        config.discussion.participants.length > 0
+          ? config.discussion.participants
+          : inferDiscussionParticipants(config, currentAgent);
+
+      if (discussionParticipants.length > 0) {
+        console.log("\n=== plan & discuss phase ===");
+        console.log(`proposer: ${currentAgent}`);
+        console.log(`participants: ${discussionParticipants.join(", ")}`);
+        console.log(
+          `max_rounds: ${config.discussion.max_rounds} | require_consensus: ${config.discussion.require_consensus}`
+        );
+
+        logger.logEvent({
+          type: "discussion_phase_started",
+          proposer: currentAgent,
+          participants: discussionParticipants,
+          max_rounds: config.discussion.max_rounds,
+          require_consensus: config.discussion.require_consensus,
+        });
+
+        const discussResult = await runPlanAndDiscuss(
+          input.task,
+          currentAgent,
+          {
+            config,
+            cwd,
+            invokeAgentFn,
+            askHumanInputFn: askHumanInputFn,
+            logger,
+            timeoutOverrideMs,
+          }
+        );
+
+        // Add discussion to conversation history
+        appendConversationTurn(
+          conversationHistory,
+          currentAgent,
+          `[PROPOSAL] ${discussResult.proposal.summary}\n\n${discussResult.proposal.approach}`
+        );
+        for (const round of discussResult.rounds) {
+          appendConversationTurn(
+            conversationHistory,
+            round.speaker,
+            `[DISCUSSION] (${round.sentiment}) ${round.message}`
+          );
+        }
+
+        currentMessage = discussResult.approvedMessage;
+        currentMessageSpeaker = currentAgent;
+        hopCount += discussResult.totalHops;
+
+        console.log(
+          `\n=== discussion complete: ${discussResult.status} (${discussResult.totalHops} hops used) ===`
+        );
+        console.log("=== entering implementation phase ===");
+
+        logger.logEvent({
+          type: "discussion_phase_completed",
+          status: discussResult.status,
+          hops_used: discussResult.totalHops,
+          proposal_summary: discussResult.proposal.summary,
+          rounds_count: discussResult.rounds.length,
+        });
+      } else {
+        console.log(
+          "\n[discussion] enabled but no participants available; skipping"
+        );
+      }
     }
 
     while (hopCount < maxHops) {
@@ -862,6 +970,56 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
         target = config.routing.review;
         nextStepPromptScope = "review";
         nextThreadKey = resolveNextThreadKey(target, currentThreadKey);
+      }
+
+      // --- Review iteration: auto-route request-changes back to primary ---
+      if (
+        currentStepPromptScope === "review" &&
+        contract.review_verdict === "request-changes" &&
+        reviewIterationCount < config.max_review_iterations
+      ) {
+        reviewIterationCount += 1;
+        console.log(
+          `\n[review-iter] changes requested (iteration ${reviewIterationCount}/${config.max_review_iterations}); routing back to primary`
+        );
+        logger.logEvent({
+          type: "review_iteration_redirect",
+          step_id: stepId,
+          agent: currentAgent,
+          review_iteration: reviewIterationCount,
+          max_iterations: config.max_review_iterations,
+          review_comments_count: contract.review_comments?.length || 0,
+        });
+
+        const reviseMessage = formatReviewFeedback(contract);
+        routedAction = "primary";
+        target = config.routing.primary;
+        nextStepPromptScope = "primary";
+        nextThreadKey = resolveNextThreadKey(target, currentThreadKey);
+        contract = {
+          ...contract,
+          next_action: "primary",
+          message: reviseMessage,
+        };
+      }
+
+      // Reset review iteration count on approval
+      if (
+        currentStepPromptScope === "review" &&
+        contract.review_verdict === "approve"
+      ) {
+        if (reviewIterationCount > 0) {
+          console.log(
+            `\n[review-iter] approved after ${reviewIterationCount} review iteration(s)`
+          );
+        }
+        logger.logEvent({
+          type: "review_approved",
+          step_id: stepId,
+          agent: currentAgent,
+          iterations: reviewIterationCount,
+        });
+        reviewIterationCount = 0;
       }
 
       if (target !== "stop" || routedAction === "done") {

@@ -14,6 +14,9 @@ This document covers the programmatic API for embedding `coding-agent-git-pipe` 
   - [validateContract](#validatecontract)
   - [parseContractOutput](#parsecontractoutput)
   - [CONTRACT_SUFFIX](#contract_suffix)
+- [Discussion Module](#discussion-module)
+  - [runPlanAndDiscuss](#runplandiscuss)
+  - [DiscussionResult](#discussionresult)
 - [Routing](#routing)
   - [resolveTarget](#resolvetarget)
 - [Configuration](#configuration)
@@ -69,14 +72,16 @@ The main entry point. Runs the full orchestration loop: invoke agent, parse cont
 **Behavior:**
 1. Loads config from `.agentpipe.json` (or `input.configPath`).
 2. Acquires a lock file to prevent concurrent runs.
-3. Maintains one logical thread per agent CLI (`codex`, `claude`, `gemini`) with opaque adapter session refs when available.
-4. Loops: invoke agent -> parse contract -> route to next -> repeat.
-5. When `review_gate` is enabled, `primary -> done` is forced through `review` only if repo state changed since the last review, or when repo state is unavailable.
-6. On `done -> stop`, opens a finish/continue human gate instead of exiting immediately. `continue` resumes the same agent/session.
-7. `/finish` stops the run from any human gate.
-8. Stops on `finish`, `/finish`, `max_hops`, or unrecoverable error.
-9. Logs every event to a JSONL file.
-10. Releases lock on exit (including SIGINT/SIGTERM).
+3. **Plan & discuss phase** (if `discussion.enabled` or `input.discuss`): primary proposes, participants review with `sentiment`/`concerns`, iterate until consensus or human decision.
+4. Maintains one logical thread per agent CLI (`codex`, `claude`, `gemini`) with opaque adapter session refs when available.
+5. Loops: invoke agent -> parse contract -> route to next -> repeat.
+6. **Review iteration**: when reviewer returns `review_verdict: "request-changes"`, auto-routes back to primary with formatted `review_comments`. Repeats up to `max_review_iterations`.
+7. When `review_gate` is enabled, `primary -> done` is forced through `review` only if repo state changed since the last review, or when repo state is unavailable.
+8. On `done -> stop`, opens a finish/continue human gate instead of exiting immediately. `continue` resumes the same agent/session.
+9. `/finish` stops the run from any human gate.
+10. Stops on `finish`, `/finish`, `max_hops`, or unrecoverable error.
+11. Logs every event to a JSONL file.
+12. Releases lock on exit (including SIGINT/SIGTERM).
 
 **Runtime injection:** All three core behaviors (agent invocation, human input, repo state) can be overridden via `input.runtime` for testing or custom integrations.
 
@@ -88,6 +93,7 @@ The main entry point. Runs the full orchestration loop: invoke agent, parse cont
 interface RunInput {
   task: string;                              // The task description
   primaryAgent?: AgentName | null;           // Override primary agent (default: config routing.primary)
+  discuss?: boolean | null;                  // Enable plan & discuss phase (overrides config)
   maxHops?: number | null;                   // Override max hops (default: config)
   timeoutMs?: number | null;                 // Override per-agent timeout (default: config)
   maxInvalidContractRetries?: number | null;  // Override retry count (default: config)
@@ -162,17 +168,32 @@ interface Contract {
   to?: NextAction;          // Optional routing override (action names, NOT agent names)
   message: string;
   questions?: Question[];   // Required when next_action = "ask-human"
+  // v2 fields (optional, phase-dependent)
+  sentiment?: Sentiment;           // Discussion: agree, disagree, partial, neutral
+  concerns?: string[];             // Discussion: list of technical concerns
+  proposal?: Proposal;             // Planning: proposed approach
+  review_verdict?: ReviewVerdict;  // Review: approve, request-changes, reject
+  review_comments?: ReviewComment[]; // Review: specific code issues
+  confidence?: number;             // 0-1 confidence score
 }
 
 type NextAction = "primary" | "review" | "pair" | "ask-human" | "done";
+type Sentiment = "agree" | "disagree" | "partial" | "neutral";
+type ReviewVerdict = "approve" | "request-changes" | "reject";
 
-interface Question {
-  id: string;
-  text: string;
-}
+interface Question { id: string; text: string; }
+interface Proposal { summary: string; approach: string; files?: string[]; }
+interface ReviewComment { file?: string; line?: number; comment: string; }
 ```
 
 **Key design decision:** The `to` field uses action names (`primary`, `review`, `pair`), not agent names (`claude`, `codex`, `gemini`). This keeps agents unaware of each other's identity. The router maps actions to agents via the config.
+
+**v2 fields** are all optional and backward-compatible. The orchestrator interprets them based on the current phase:
+- During **plan**: `proposal` and `confidence` are used.
+- During **discuss**: `sentiment`, `concerns`, and `confidence` are used.
+- During **review**: `review_verdict` and `review_comments` drive automatic review iteration.
+
+Agents that don't return v2 fields still work fine — the orchestrator falls back to the v1 routing behavior.
 
 **Pair semantics:** When `next_action` is `"pair"`, the orchestrator saves the current agent as a return target, routes to the configured pair agent, and automatically returns to the invoking agent after one hop. Pair is advisory-only: the pair agent does not control routing. On pair steps, `agent-pipe` ignores `next_action` / `to` and uses only the returned `message` before returning to the caller.
 
@@ -188,13 +209,21 @@ function validateContract(value: unknown): Contract
 
 Validates a parsed JSON object against the contract schema. Throws on invalid input.
 
-**Validation rules:**
+**Validation rules (core fields):**
 - `contract_version` must be `"1"`.
 - `next_action` must be one of: `primary`, `review`, `pair`, `ask-human`, `done`.
 - `to` (if present) must be one of: `primary`, `review`, `pair`, `ask-human`, `done`.
 - `message` must be a non-empty string (whitespace is trimmed).
 - `questions` (if present) must be an array of `{ id: string, text: string }`.
 - `questions` cannot be empty when `next_action` is `ask-human`.
+
+**Validation rules (v2 optional fields):**
+- `sentiment` (if present) must be one of: `agree`, `disagree`, `partial`, `neutral`.
+- `concerns` (if present) must be an array of strings.
+- `proposal` (if present) must have non-empty `summary` and `approach` strings; `files` (if present) must be an array of non-empty strings.
+- `review_verdict` (if present) must be one of: `approve`, `request-changes`, `reject`.
+- `review_comments` (if present) must be an array of objects, each with a non-empty `comment` string and optional `file` (string) and `line` (non-negative integer).
+- `confidence` (if present) must be a number between 0 and 1.
 
 ---
 
@@ -234,6 +263,70 @@ You must end your response with exactly one JSON block and no text after it:
 }
 ```
 ```
+
+---
+
+## Discussion Module
+
+### `runPlanAndDiscuss`
+
+```typescript
+function runPlanAndDiscuss(
+  task: string,
+  primaryAgent: AgentName,
+  deps: DiscussionDeps
+): Promise<DiscussionResult>
+```
+
+Runs the plan & discuss phase before implementation. Called by the orchestrator when `discussion.enabled` is true.
+
+**Flow:**
+1. **Plan**: Invokes the primary agent with a planning prompt. Extracts the `proposal` from the contract.
+2. **Discuss**: For each participant, invokes them with the proposal and collects `sentiment` and `concerns`.
+3. **Consensus check**: Full consensus = all agree with no concerns. Partial = no one disagrees.
+4. **Revision**: On disagreement, sends all feedback back to the proposer for revision. Repeat up to `max_rounds`.
+5. **Deadlock**: After max rounds without consensus, asks human to decide.
+
+**Dependencies (`DiscussionDeps`):**
+
+```typescript
+interface DiscussionDeps {
+  config: Config;
+  cwd: string;
+  invokeAgentFn: InvokeAgentFn;
+  askHumanInputFn: AskHumanInputFn;
+  logger: { logEvent: (event: Record<string, unknown>) => void };
+  timeoutOverrideMs?: number;
+}
+```
+
+### `DiscussionResult`
+
+```typescript
+interface DiscussionResult {
+  proposal: Proposal;                        // Final approved proposal
+  rounds: DiscussionRound[];                 // All discussion feedback
+  status: "consensus" | "partial-consensus" | "deadlock" | "human-decided";
+  totalHops: number;                         // Agent invocations used
+  approvedMessage: string;                   // Formatted message for the implement phase
+}
+
+interface DiscussionRound {
+  speaker: AgentName;
+  sentiment: Sentiment;
+  concerns: string[];
+  message: string;
+  confidence?: number;
+}
+```
+
+### `inferDiscussionParticipants`
+
+```typescript
+function inferDiscussionParticipants(config: Config, primaryAgent: AgentName): AgentName[]
+```
+
+When `discussion.participants` is empty, infers participants from the routing table — all unique agent targets except the primary agent.
 
 ---
 
@@ -277,6 +370,15 @@ interface Config {
   adapters: Partial<Record<AgentName, string[]>>;
   step_prompts: Record<"primary" | "review" | "pair", string[]>;
   review_gate: boolean;
+  discussion: DiscussionConfig;
+  max_review_iterations: number;
+}
+
+interface DiscussionConfig {
+  enabled: boolean;              // Enable plan & discuss phase
+  participants: AgentName[];     // Discussion participants (empty = auto-infer)
+  max_rounds: number;            // Max discussion rounds before human escalation
+  require_consensus: boolean;    // Require full consensus or accept partial
 }
 ```
 
@@ -334,6 +436,11 @@ The built-in routing defaults are starter values, not a requirement. After `agen
 | `adapter_args` | `{}` (extra CLI flags appended to the resolved adapter command) |
 | `adapters` | `{}` (uses mode-based defaults) |
 | `step_prompts` | `{ primary: [], review: [], pair: [] }` |
+| `discussion.enabled` | `false` |
+| `discussion.participants` | `[]` (auto-infer from routing) |
+| `discussion.max_rounds` | `3` |
+| `discussion.require_consensus` | `true` |
+| `max_review_iterations` | `3` |
 
 The CLI command `agent-pipe init` writes this default config shape to `.agentpipe.json` in the target repo. Users are expected to review the generated `routing` block and choose which installed CLI owns `primary`, `review`, and `pair`.
 
@@ -675,11 +782,20 @@ type TargetName = AgentName | "human" | "stop";
 // Actions that appear in contracts (agent-facing)
 type NextAction = "primary" | "review" | "pair" | "ask-human" | "done";
 
+// Discussion sentiment
+type Sentiment = "agree" | "disagree" | "partial" | "neutral";
+
+// Review verdict
+type ReviewVerdict = "approve" | "request-changes" | "reject";
+
 // Question for human gate
-interface Question {
-  id: string;
-  text: string;
-}
+interface Question { id: string; text: string; }
+
+// Proposal (plan & discuss phase)
+interface Proposal { summary: string; approach: string; files?: string[]; }
+
+// Review comment (review phase)
+interface ReviewComment { file?: string; line?: number; comment: string; }
 ```
 
 ---
@@ -707,6 +823,19 @@ Every run produces a JSONL file at `{log_dir}/{run_id}.jsonl`. Each line is a JS
 | `pair_invoked` | `step_id`, `invoking_agent`, `pair_target` | Agent initiated a pair session |
 | `pair_return` | `step_id`, `return_agent` | Pair session ended, returning to invoking agent |
 | `review_gate_redirect` | `step_id`, `agent`, `original_action`, `redirected_to`, `reason` | `primary -> done` was intercepted and routed to `review` because repo state changed since the last review or repo state was unavailable |
+| `review_iteration_redirect` | `step_id`, `agent`, `review_iteration`, `max_iterations`, `review_comments_count` | Reviewer requested changes; auto-routing back to primary |
+| `review_approved` | `step_id`, `agent`, `iterations` | Reviewer approved after N iterations |
+| `discussion_phase_started` | `proposer`, `participants`, `max_rounds`, `require_consensus` | Plan & discuss phase begins |
+| `discussion_phase_completed` | `status`, `hops_used`, `proposal_summary`, `rounds_count` | Plan & discuss phase ends |
+| `plan_phase_started` | `agent` | Primary agent begins planning |
+| `plan_phase_completed` | `agent`, `proposal_summary`, `confidence` | Plan produced |
+| `discussion_round_started` | `round`, `max_rounds` | Discussion round begins |
+| `discussion_feedback` | `round`, `speaker`, `sentiment`, `concerns_count`, `concerns`, `confidence` | Participant feedback received |
+| `discussion_consensus` | `round`, `status` | Consensus reached |
+| `discussion_deadlock` | `rounds_completed` | Max rounds reached without consensus |
+| `proposal_revision_started` | `round`, `agent` | Proposer revising after feedback |
+| `proposal_revised` | `round`, `revised_summary`, `confidence` | Revised proposal produced |
+| `discussion_human_decision` | `response` | Human resolved a deadlock |
 | `done_gate_opened` | `step_id`, `agent`, `thread_key`, `session_ref` | Agent proposed completion and the finish/continue gate opened |
 | `done_gate_finish` | `step_id`, `agent`, `thread_key` | Human chose `finish` or `/finish` |
 | `done_gate_continue` | `step_id`, `agent`, `thread_key`, `response` | Human continued with a follow-up that resumes the same session |
@@ -786,6 +915,7 @@ Current test files:
 
 | File | Tests |
 |------|-------|
-| `tests/contract.test.ts` | Valid contract acceptance, invalid target rejection |
+| `tests/contract.test.ts` | Valid contract acceptance, invalid target rejection, v2 fields (sentiment, concerns, proposal, review_verdict, review_comments, confidence) |
 | `tests/parser.test.ts` | Fenced JSON extraction, raw JSON, missing block |
-| `tests/orchestrator.test.ts` | Full loop (`primary -> review -> done`), ask-human pause/resume, retry on invalid contract, max_hops termination, no-progress guard, pair routing with auto-return |
+| `tests/orchestrator.test.ts` | Full loop (`primary -> review -> done`), ask-human pause/resume, retry on invalid contract, max_hops termination, no-progress guard, pair routing with auto-return, review iteration (request-changes → fix → re-review → approve), discussion integration |
+| `tests/discussion.test.ts` | Consensus, revision on disagreement, deadlock with human escalation, partial consensus, no-participant skip, participant inference |

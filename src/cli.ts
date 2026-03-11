@@ -16,6 +16,7 @@ function printHelp(): void {
   console.log("");
   console.log("Run options:");
   console.log("  --primary-agent <name>     Primary agent (claude|codex|gemini)");
+  console.log("  --discuss                  Enable plan & discuss phase before implementation");
   console.log("  --max-hops <number>        Maximum routing hops before pause");
   console.log("  --timeout-ms <number>      Per-agent timeout in milliseconds");
   console.log("  --max-retries <number>     Contract parse retries (default from config)");
@@ -34,6 +35,7 @@ function printHelp(): void {
 function parseRunArgs(args: string[]): {
   taskParts: string[];
   primaryAgent: AgentName | null;
+  discuss: boolean;
   maxHops: number | null;
   timeoutMs: number | null;
   maxRetries: number | null;
@@ -45,6 +47,7 @@ function parseRunArgs(args: string[]): {
   const parsed = {
     taskParts: [] as string[],
     primaryAgent: null as AgentName | null,
+    discuss: false,
     maxHops: null as number | null,
     timeoutMs: null as number | null,
     maxRetries: null as number | null,
@@ -57,6 +60,11 @@ function parseRunArgs(args: string[]): {
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     const next = args[i + 1];
+
+    if (arg === "--discuss") {
+      parsed.discuss = true;
+      continue;
+    }
 
     if (arg === "--primary-agent" && next) {
       parsed.primaryAgent = next as AgentName;
@@ -238,6 +246,7 @@ export async function main(argv = process.argv): Promise<void> {
   const result = await runOrchestrator({
     task,
     primaryAgent: parsed.primaryAgent,
+    discuss: parsed.discuss || null,
     maxHops: parsed.maxHops,
     timeoutMs: parsed.timeoutMs,
     maxInvalidContractRetries: parsed.maxRetries,

@@ -4,16 +4,16 @@
 
 ### A tiny CLI that lets 🧠 Claude, ⚡ Codex, and 🔍 Gemini collaborate 🤝 like a real engineering team.
 
-**One primary agent drives. A pair agent helps. A review agent checks the result.**
+**Agents plan together, discuss the approach, implement, and review each other's work — like real engineers.**
 
 [![npm version](https://img.shields.io/npm/v/agent-pipe)](https://www.npmjs.com/package/agent-pipe)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
 ```
-agent-pipe run "implement JWT refresh token flow"
+agent-pipe run "implement JWT refresh token flow" --discuss
 ```
 
-⚡ Codex drives → 🧠 Claude pairs when needed → 🔍 Gemini reviews → ✅ You get peer-reviewed code
+📋 Plan → 💬 Discuss & agree → ⚡ Implement → 🔍 Review (iterate until approved) → ✅ Done
 
 </div>
 
@@ -44,21 +44,25 @@ Most developers settle for a single agent doing everything — driving the task,
 `agent-pipe` brings the peer review model to AI coding — automatically.
 
 ```text
-You: agent-pipe run "implement JWT refresh token flow"
+You: agent-pipe run "implement JWT refresh token flow" --discuss
 
-  → ⚡ Codex owns the primary thread and works the repo
-  → 🧠 Claude joins as a pair agent when extra reasoning helps
-  → 🔍 Gemini reviews the diff for correctness and edge cases
-  → 💬 Human is asked only when needed
-  → ✅ You come back to peer-reviewed, multi-perspective code
+  → 📋 Codex proposes an implementation plan
+  → 💬 Claude and Gemini review the plan, raise concerns, suggest alternatives
+  → 🤝 Team reaches consensus (or human breaks a tie)
+  → ⚡ Codex implements the agreed approach
+  → 🔍 Gemini reviews the code — requests specific changes with file:line comments
+  → 🔄 Codex fixes the issues, Gemini re-reviews
+  → ✅ Approved — you get team-reviewed, multi-perspective code
 ```
 
-It works by orchestrating real autonomous coding CLIs (Claude Code, Codex, Gemini CLI) into a repeatable `primary → review` flow with optional `pair` hops, using a tiny JSON handoff contract. Each agent runs as its own process with full shell access, file editing, and tool use — these aren't simulated personas inside one app.
+It works by orchestrating real autonomous coding CLIs (Claude Code, Codex, Gemini CLI) into a `plan → discuss → implement → review` flow, using a structured JSON handoff contract. Each agent runs as its own process with full shell access, file editing, and tool use — these aren't simulated personas inside one app.
 
 ### ⚡ What you get
 
 |     | Benefit                           | How                                                                                              |
 | --- | --------------------------------- | ------------------------------------------------------------------------------------------------ |
+| 💬  | **Team discussion before code**   | Agents debate the approach, raise concerns, and reach consensus before anyone writes a line       |
+| 🔄  | **Iterative code review**         | Reviewer requests specific changes with file:line comments; implementer fixes; reviewer re-reviews |
 | 🔀  | **Cross-model peer review**       | A different model always reviews — catching blind spots the author can't see                     |
 | 🧠  | **Right model for the right job** | Let one agent own the task, call in a pair when needed, and route review to fresh eyes           |
 | 💰  | **Cost-aware routing**            | Spend expensive tokens on reasoning, use high-throughput models for heavy lifting                |
@@ -79,18 +83,23 @@ It works by orchestrating real autonomous coding CLIs (Claude Code, Codex, Gemin
 
 ```mermaid
 flowchart LR
-    U["👤 Your task"] --> P["⚡ Primary agent"]
-    P -->|pair| X["🤝 Pair agent"]
-    P -->|review| R["🔍 Review agent"]
-    X --> P
-    R --> D["✅ Done or 💬 ask human"]
+    U["👤 Your task"] --> PL["📋 Plan"]
+    PL --> DI["💬 Discuss"]
+    DI -->|consensus| IM["⚡ Implement"]
+    DI -->|revise| PL
+    DI -->|deadlock| H["💬 Human"]
+    IM -->|pair| X["🤝 Pair agent"]
+    X --> IM
+    IM -->|review| R["🔍 Review"]
+    R -->|approve| D["✅ Done"]
+    R -->|request changes| IM
 ```
 
 ### 🎯 Who it's for
 
-- You want `primary → review` with optional `pair` hops without building a custom agent framework
+- You want agents that discuss, agree, implement, and review — like a real engineering team
 - You already use one or more coding CLIs and want them to collaborate
-- You want better output quality through multi-model peer review
+- You want better output quality through multi-model planning, discussion, and peer review
 - You care about cost optimization across different model tiers
 - You want a minimal, inspectable system — not a black box
 
@@ -122,8 +131,11 @@ Contributions are welcome.
   - [CLI Flags](#cli-flags)
   - [Using With Fewer Agents](#using-with-fewer-agents)
 - [How It Works](#how-it-works)
+  - [Plan and Discuss Phase](#plan-and-discuss-phase)
+  - [Review Iteration](#review-iteration)
 - [Configuration](#configuration)
   - [Config Reference](#config-reference)
+  - [Discussion Config](#discussion-config)
   - [Step Prompts](#step-prompts)
   - [Step Threads and Sessions](#step-threads-and-sessions)
   - [Adapter Modes](#adapter-modes)
@@ -157,7 +169,9 @@ npx coding-agent-git-pipe run "implement JWT refresh token flow"
 
 # If installed globally
 agent-pipe run "add dark mode support"
-agent-pipe run "refactor auth module"
+
+# Enable team discussion before implementation
+agent-pipe run "refactor auth module" --discuss
 ```
 
 `agent-pipe init` writes a starter routing config. The shipped defaults are `primary=codex`, `review=gemini`, and `pair=claude`, but you should change those to match the CLIs you actually have installed and want to use.
@@ -263,6 +277,7 @@ The orchestrator will:
 | Flag                     | Default           | Description                                                              |
 | ------------------------ | ----------------- | ------------------------------------------------------------------------ |
 | `--primary-agent <name>` | `codex`           | Override the primary agent for this run (`claude`, `codex`, or `gemini`) |
+| `--discuss`              | off               | Enable plan & discuss phase before implementation                       |
 | `--max-hops <n>`         | `50`              | Maximum routing hops before stopping                                   |
 | `--timeout-ms <n>`       | `1800000`         | Per-agent timeout in milliseconds (default: 30 min)                    |
 | `--max-retries <n>`      | `1`               | Contract parse retries before escalating to human                      |
@@ -276,8 +291,14 @@ The orchestrator will:
 ### Examples
 
 ```bash
-# Start with claude instead of the default codex primary agent, limit to 5 hops
-agent-pipe run "add dark mode support" --primary-agent claude --max-hops 5
+# Team discussion before implementation (plan → discuss → implement → review)
+agent-pipe run "add dark mode support" --discuss
+
+# Start with claude as the primary agent, with discussion enabled
+agent-pipe run "refactor auth module" --primary-agent claude --discuss
+
+# Quick mode without discussion (direct implementation → review)
+agent-pipe run "fix typo in README" --primary-agent claude --max-hops 5
 
 # Longer timeout for complex tasks
 agent-pipe run "refactor auth module" --timeout-ms 600000
@@ -340,18 +361,54 @@ You don't need all three agents. Configure `.agentpipe.json` to route all action
 ## How It Works
 
 ```
-You: agent-pipe run "implement JWT refresh token flow"
+You: agent-pipe run "implement JWT refresh token flow" --discuss
 
-  Orchestrator -> Codex (owns the primary thread)
-  Codex -> Claude (pair: asks for architecture advice)
-  Claude -> Codex (returns with suggestions)
-  Codex -> Gemini (reviews the diff, runs linters)
-  Gemini -> Human (asks a question)
-  Human -> Gemini (answers)
-  Gemini -> done
+  === plan & discuss phase ===
+  Codex proposes: "Add JWT middleware with refresh token rotation"
+  Claude reviews: agree (no concerns)
+  Gemini reviews: partial ("consider token revocation list")
+  Codex revises: "Added revocation check to approach"
+  Claude reviews: agree
+  Gemini reviews: agree
+  === consensus reached ===
 
-You come back to a reviewed implementation.
+  === implementation phase ===
+  Codex implements the agreed plan
+  Codex -> Gemini (review)
+  Gemini -> request-changes: "Missing null check at src/auth.ts:15"
+  Codex fixes the issue
+  Codex -> Gemini (re-review)
+  Gemini -> approve
+  === done ===
+
+You come back to a team-planned, team-reviewed implementation.
 ```
+
+### Plan and Discuss Phase
+
+When `--discuss` is enabled (or `discussion.enabled` is `true` in config), the orchestrator runs a multi-agent planning session before any code is written:
+
+1. **Plan**: The primary agent analyzes the task and proposes an approach — what to build, how to build it, which files to touch.
+2. **Discuss**: Each participant (other configured agents) reviews the proposal. They return a `sentiment` (agree/disagree/partial) and list specific `concerns`.
+3. **Consensus check**: If all participants agree with no concerns, the proposal is approved. If `require_consensus` is false, partial agreement (no one disagrees) is enough.
+4. **Revision**: If there's disagreement, the proposer sees all feedback and revises the approach. Participants review again.
+5. **Deadlock**: After `max_rounds` without consensus, the human is asked to decide.
+
+The approved plan becomes the implementation task, giving the primary agent a clear, team-vetted blueprint to follow.
+
+### Review Iteration
+
+Instead of a one-shot review gate, the review step now supports iterative review:
+
+1. The reviewer examines the code and returns a `review_verdict`: `approve`, `request-changes`, or `reject`.
+2. On `request-changes`, the reviewer includes `review_comments` with specific `file`, `line`, and `comment` for each issue.
+3. The orchestrator automatically routes back to the primary agent with the formatted review feedback.
+4. The primary agent addresses the comments, then goes back to review.
+5. This repeats up to `max_review_iterations` (default: 3) until approved.
+
+This mirrors how real code review works — not a rubber stamp, but an iterative conversation between implementer and reviewer.
+
+---
 
 In `auto` mode (default), each agent:
 
@@ -390,6 +447,13 @@ agent-pipe init
   "lock_file": ".agentpipe.lock",
   "log_dir": ".agentpipe/runs",
   "review_gate": true,
+  "discussion": {
+    "enabled": false,
+    "participants": [],
+    "max_rounds": 3,
+    "require_consensus": true
+  },
+  "max_review_iterations": 3,
   "agent_timeouts_ms": {},
   "adapter_modes": {},
   "adapter_args": {},
@@ -431,11 +495,39 @@ Add to your `.gitignore`:
 | `lock_file`                    | `string`                         | `".agentpipe.lock"`                                          | Lock file path for concurrency protection                                                    |
 | `log_dir`                      | `string`                         | `".agentpipe/runs"`                                          | JSONL log directory                                                                          |
 | `review_gate`                  | `boolean`                        | `true`                                                       | If enabled, `primary -> done` is forced through `review` whenever repo state changed since the last review (or repo state is unavailable) |
+| `discussion`                   | `object`                         | see [Discussion Config](#discussion-config)                   | Plan & discuss phase settings                                                                |
+| `max_review_iterations`        | `number`                         | `3`                                                          | Max review→fix→re-review cycles before the review verdict is accepted as-is                   |
 | `agent_timeouts_ms`            | `Record<agent, number>`          | `{}`                                                         | Per-agent timeout overrides                                                                  |
 | `adapter_modes`                | `Record<agent, "print"\|"auto">` | `{}` (all default to `auto`)                                 | Per-agent execution mode                                                                     |
 | `adapter_args`                 | `Record<agent, string[]>`        | `{}`                                                         | Extra CLI flags appended to the resolved adapter command                                     |
 | `adapters`                     | `Record<agent, string[]>`        | `{}`                                                         | Per-agent command override                                                                   |
 | `step_prompts`                 | `Record<scope, string[]>`        | all empty arrays                                             | Hidden prompt instructions scoped to `primary`, `review`, or `pair`                          |
+
+### Discussion Config
+
+The `discussion` object controls the plan & discuss phase:
+
+| Field               | Type         | Default | Description                                                                  |
+| ------------------- | ------------ | ------- | ---------------------------------------------------------------------------- |
+| `enabled`           | `boolean`    | `false` | Enable the plan & discuss phase (or use `--discuss` CLI flag)                |
+| `participants`      | `AgentName[]`| `[]`    | Which agents participate in discussion. Empty = auto-infer from routing      |
+| `max_rounds`        | `number`     | `3`     | Maximum discussion rounds before escalating to human                         |
+| `require_consensus` | `boolean`    | `true`  | If false, partial consensus (no disagreements) is enough to proceed          |
+
+When `participants` is empty, the orchestrator infers participants from the routing table — all unique agents that aren't the primary proposer.
+
+Example — enable discussion with relaxed consensus:
+
+```json
+{
+  "discussion": {
+    "enabled": true,
+    "participants": ["claude", "gemini"],
+    "max_rounds": 2,
+    "require_consensus": false
+  }
+}
+```
 
 ### Step Prompts
 
@@ -487,6 +579,25 @@ By default, `agent-pipe` treats `review` as the final acceptance gate for change
 - If repo state cannot be determined, the gate stays conservative and still routes through `review`.
 - A `review` step can still emit `done` normally.
 - Set `"review_gate": false` if you want to allow `primary -> done` without this automatic review enforcement.
+
+### Review Iteration
+
+When the review agent includes `review_verdict: "request-changes"` in its contract, the orchestrator automatically:
+
+1. Formats the `review_comments` into a structured feedback message (with file:line references).
+2. Routes back to the primary agent with the feedback.
+3. The primary agent addresses the comments.
+4. The review agent re-reviews.
+
+This repeats up to `max_review_iterations` (default 3). After that limit, the review verdict is accepted as-is and passes through to the done gate.
+
+Set `max_review_iterations` to control how many review cycles are allowed:
+
+```json
+{
+  "max_review_iterations": 5
+}
+```
 
 ### Adapter Modes
 
@@ -570,9 +681,17 @@ Every agent response must end with a JSON contract. This is how agents tell the 
   "next_action": "primary | review | pair | ask-human | done",
   "to": "(optional) primary | review | pair | ask-human | done",
   "message": "concise technical handoff for the next step",
-  "questions": [{ "id": "q1", "text": "Only used when next_action=ask-human" }]
+  "questions": [{ "id": "q1", "text": "Only used when next_action=ask-human" }],
+  "sentiment": "(optional) agree | disagree | partial | neutral",
+  "concerns": ["(optional) list of technical concerns"],
+  "proposal": { "summary": "...", "approach": "...", "files": ["..."] },
+  "review_verdict": "(optional) approve | request-changes | reject",
+  "review_comments": [{ "file": "path", "line": 42, "comment": "issue" }],
+  "confidence": 0.85
 }
 ```
+
+### Core Fields
 
 | Field              | Required             | Description                                           |
 | ------------------ | -------------------- | ----------------------------------------------------- |
@@ -581,6 +700,22 @@ Every agent response must end with a JSON contract. This is how agents tell the 
 | `to`               | No                   | Override routing (uses action names, not agent names) |
 | `message`          | Yes                  | Concise technical handoff passed to the next step     |
 | `questions`        | Only for `ask-human` | Questions for the human to answer                     |
+
+### Discussion Fields (used during plan & discuss phase)
+
+| Field              | Required   | Description                                                       |
+| ------------------ | ---------- | ----------------------------------------------------------------- |
+| `sentiment`        | No         | Agent's position: `agree`, `disagree`, `partial`, or `neutral`    |
+| `concerns`         | No         | Array of specific technical concerns                              |
+| `proposal`         | No         | Proposed approach: `{ summary, approach, files? }`                |
+| `confidence`       | No         | Confidence score from 0 to 1                                     |
+
+### Review Fields (used during review phase)
+
+| Field              | Required   | Description                                                       |
+| ------------------ | ---------- | ----------------------------------------------------------------- |
+| `review_verdict`   | No         | Review result: `approve`, `request-changes`, or `reject`          |
+| `review_comments`  | No         | Array of `{ file?, line?, comment }` with specific code issues    |
 
 **Important:** `to` uses action names (`primary`, `review`, `pair`) — never agent names. The routing config maps actions to agents internally. This keeps routing action-based instead of model-specific.
 
@@ -612,16 +747,23 @@ In all continue cases, the follow-up goes back to the same agent and the same sa
 
 1. Start run with task string.
 2. Acquire lock file (prevents concurrent runs in the same repo).
-3. Invoke the primary agent with task + contract instructions.
-4. Stream stdout/stderr to terminal live (prefixed with agent name).
-5. Parse the final JSON contract block from output.
-6. Validate contract fields.
-7. Route to next target via config routing table.
-8. On `pair` action: save return context, route to pair agent, then auto-return after one hop.
-9. On target `human` (default for `ask-human`) or failures: pause for human input.
-10. On `done -> stop`: open the human finish/continue gate. On `finish` or `/finish`, stop. On `continue`, resume the same logical agent session.
-11. Check no-progress guard (git state unchanged for too many steps?).
-12. Write JSONL event log per step. Release lock on exit/signals.
+3. **Plan & discuss phase** (if enabled):
+   - Primary agent proposes an approach with `proposal` field.
+   - Each participant reviews with `sentiment` and `concerns`.
+   - On disagreement, proposer revises. Repeat up to `max_rounds`.
+   - On consensus, the approved plan becomes the implementation task.
+   - On deadlock, human decides.
+4. Invoke the primary agent with task + contract instructions.
+5. Stream stdout/stderr to terminal live (prefixed with agent name).
+6. Parse the final JSON contract block from output.
+7. Validate contract fields (including v2 fields like `review_verdict`, `review_comments`).
+8. Route to next target via config routing table.
+9. **Review iteration**: if reviewer returns `review_verdict: "request-changes"`, auto-route back to primary with formatted comments. Repeat up to `max_review_iterations`.
+10. On `pair` action: save return context, route to pair agent, then auto-return after one hop.
+11. On target `human` (default for `ask-human`) or failures: pause for human input.
+12. On `done -> stop`: open the human finish/continue gate. On `finish` or `/finish`, stop. On `continue`, resume the same logical agent session.
+13. Check no-progress guard (git state unchanged for too many steps?).
+14. Write JSONL event log per step. Release lock on exit/signals.
 
 The orchestrator maintains a rolling conversation history (last 4 turns) and separate per-agent session state so returning to the same CLI later can continue naturally instead of restarting from scratch.
 
@@ -653,7 +795,7 @@ Every run produces a detailed JSONL log at `.agentpipe/runs/{runId}.jsonl`. Each
 {"ts":"2026-03-05T10:05:00.000Z","run_id":"abc-123","type":"run_completed","status":"done"}
 ```
 
-Event types: `run_started`, `step_started`, `thread_session_started`, `thread_session_resumed`, `agent_invocation`, `contract_retry`, `contract_invalid`, `step_contract`, `step_failed`, `routing_failed`, `human_response`, `no_progress_check`, `pair_invoked`, `pair_return`, `review_gate_redirect`, `done_gate_opened`, `done_gate_finish`, `done_gate_continue`, `run_completed`, `signal`, `run_finalized`.
+Event types: `run_started`, `step_started`, `thread_session_started`, `thread_session_resumed`, `agent_invocation`, `contract_retry`, `contract_invalid`, `step_contract`, `step_failed`, `routing_failed`, `human_response`, `no_progress_check`, `pair_invoked`, `pair_return`, `review_gate_redirect`, `review_iteration_redirect`, `review_approved`, `discussion_phase_started`, `discussion_phase_completed`, `plan_phase_started`, `plan_phase_completed`, `discussion_round_started`, `discussion_feedback`, `discussion_consensus`, `discussion_deadlock`, `proposal_revision_started`, `proposal_revised`, `done_gate_opened`, `done_gate_finish`, `done_gate_continue`, `run_completed`, `signal`, `run_finalized`.
 
 ---
 
@@ -728,12 +870,13 @@ Uses Node.js built-in test runner with `tsx` for TypeScript support. Tests use r
 bin/cli.js              CLI entry point (loads built dist)
 src/
   cli.ts                Argument parsing and validation
-  types.ts              All TypeScript interfaces
+  types.ts              All TypeScript interfaces (Contract v2, DiscussionConfig, etc.)
   config.ts             Config loader with defaults and validation
-  contract.ts           Contract schema validation
+  contract.ts           Contract schema validation (v1 core + v2 optional fields)
   parser.ts             JSON contract extraction from agent output
   router.ts             Action-to-agent routing
-  orchestrator.ts       Main run loop
+  orchestrator.ts       Main run loop (phases, review iteration)
+  discussion.ts         Plan & discuss engine (proposal, consensus, revision)
   human-gate.ts         Interactive human input via readline
   runtime.ts            Lock file, JSONL logger, timeout resolution
   git-state.ts          Git repo state detection (HEAD + status)
@@ -744,9 +887,10 @@ src/
     codex.ts            Codex adapter (JSON line parsing)
     gemini.ts           Gemini adapter (stream-json delta parsing)
 tests/
-  contract.test.ts      Contract validation tests
+  contract.test.ts      Contract validation tests (v1 + v2 fields)
   parser.test.ts        Parser extraction tests
-  orchestrator.test.ts  End-to-end orchestrator tests
+  orchestrator.test.ts  End-to-end orchestrator tests (incl. review iteration, discussion)
+  discussion.test.ts    Discussion engine tests (consensus, revision, deadlock)
   orchestrator-output.test.ts  Output formatting tests
   adapter-base.test.ts  Base adapter tests
   claude-adapter.test.ts
@@ -781,10 +925,12 @@ console.log(result.hops); // number of steps taken
 ## Design Principles
 
 1. **Keep the orchestrator dumb.** Logic lives in agent prompts, not the pipe.
-2. **Keep the contract small.** A few fields for routing, nothing more.
+2. **Keep the contract small.** Core routing fields + optional phase-specific fields. No code payloads.
 3. **Repo is shared state.** Agents read code directly. No code payloads in the contract.
 4. **Keep routing action-based.** No agent names in the contract. Only abstract actions.
-5. **Interrupt human only when needed.** On `ask-human`, parse failures, or safety limits.
+5. **Interrupt human only when needed.** On `ask-human`, deadlocks, parse failures, or safety limits.
+6. **Discuss before implementing.** Multiple perspectives catch design flaws before they become code.
+7. **Review iteratively.** Real code review is a conversation, not a rubber stamp.
 
 ---
 
