@@ -631,7 +631,8 @@ test("orchestrator prints the parsed contract message when streamed output is si
     );
 
     assert.equal(captured.result.status, "done");
-    assert.match(captured.stdout, /\[codex\]\[primary\] visible fallback summary/);
+    const plain = captured.stdout.replace(/\x1b\[[0-9;]*m/g, "");
+    assert.match(plain, /\[codex\]\[primary\] visible fallback summary/);
   } finally {
     cleanupTempRepo(cwd);
   }

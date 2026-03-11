@@ -295,6 +295,12 @@ function getCodexCommandEvent(event: unknown): {
   };
 }
 
+function summarizeCommand(command: string): string {
+  const trimmed = command.trim();
+  if (trimmed.length <= 80) return trimmed;
+  return trimmed.slice(0, 77) + "...";
+}
+
 export function normalizeCodexJsonOutput(output: string): string {
   let lastAgentMessage = "";
   let messageDelta = "";
@@ -494,25 +500,16 @@ function runCodexStreamingCommand(
       const commandEvent = getCodexCommandEvent(parsed);
       if (commandEvent) {
         if (commandEvent.command !== "" && !renderedCommandIds.has(commandEvent.id)) {
-          emitStructuredLine(`(tool) $ ${commandEvent.command}`);
+          emitStructuredLine(`(tool) ${summarizeCommand(commandEvent.command)}`);
           renderedCommandIds.add(commandEvent.id);
         }
 
-        const previousOutput = renderedCommandOutput.get(commandEvent.id) || "";
-        if (commandEvent.output !== "" && commandEvent.output !== previousOutput) {
-          ensureOutputBreak();
-          if (previousOutput !== "" && commandEvent.output.startsWith(previousOutput)) {
-            emitStdout(commandEvent.output.slice(previousOutput.length));
-          } else {
-            emitStdout(commandEvent.output);
-          }
+        // Track output silently (don't stream verbatim — too noisy)
+        if (commandEvent.output !== "") {
           renderedCommandOutput.set(commandEvent.id, commandEvent.output);
         }
 
         if (commandEvent.completed) {
-          if (commandEvent.output !== "" && !commandEvent.output.endsWith("\n")) {
-            emitStdout("\n");
-          }
           activeTextMode = null;
         }
       }

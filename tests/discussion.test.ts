@@ -4,6 +4,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runPlanAndDiscuss, inferDiscussionParticipants } from "../src/discussion";
+import { RunSurface } from "../src/run-ui";
 import { AgentName, Config, Contract, InvokeAgentOptions } from "../src/types";
 
 function toFencedContract(contract: Contract): string {
@@ -16,6 +17,19 @@ function createTempRepo(): string {
 
 function cleanupTempRepo(dir: string): void {
   fs.rmSync(dir, { recursive: true, force: true });
+}
+
+function createMockSurface(): RunSurface {
+  return {
+    mode: "plain",
+    startRun: () => {},
+    startStep: () => {},
+    note: () => {},
+    writeAgentChunk: () => {},
+    done: () => {},
+    askHumanInput: async (payload, fallback) => fallback(payload),
+    stop: () => {},
+  };
 }
 
 function baseConfig(overrides: Partial<Config> = {}): Config {
@@ -141,6 +155,7 @@ test("runPlanAndDiscuss reaches consensus with agreeing participants", async () 
       cwd,
       invokeAgentFn,
       askHumanInputFn: async () => "",
+      surface: createMockSurface(),
       logger: { logEvent: () => {} },
     });
 
@@ -237,6 +252,7 @@ test("runPlanAndDiscuss triggers revision when participant disagrees", async () 
       cwd,
       invokeAgentFn,
       askHumanInputFn: async () => "",
+      surface: createMockSurface(),
       logger: { logEvent: () => {} },
     });
 
@@ -319,6 +335,7 @@ test("runPlanAndDiscuss escalates to human on deadlock", async () => {
       cwd,
       invokeAgentFn,
       askHumanInputFn: async () => "proceed",
+      surface: createMockSurface(),
       logger: { logEvent: () => {} },
     });
 
@@ -383,6 +400,7 @@ test("runPlanAndDiscuss skips discussion with no participants", async () => {
       cwd,
       invokeAgentFn,
       askHumanInputFn: async () => "",
+      surface: createMockSurface(),
       logger: { logEvent: () => {} },
     });
 
@@ -450,6 +468,7 @@ test("runPlanAndDiscuss accepts partial consensus when require_consensus is fals
       cwd,
       invokeAgentFn,
       askHumanInputFn: async () => "",
+      surface: createMockSurface(),
       logger: { logEvent: () => {} },
     });
 

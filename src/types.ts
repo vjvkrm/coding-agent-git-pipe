@@ -4,6 +4,7 @@ export type NextAction = "primary" | "review" | "pair" | "ask-human" | "done";
 export type StepPromptScope = "primary" | "review" | "pair";
 export type Sentiment = "agree" | "disagree" | "partial" | "neutral";
 export type ReviewVerdict = "approve" | "request-changes" | "reject";
+export type UiMode = "auto" | "plain" | "tui";
 
 export interface Question {
   id: string;
@@ -107,6 +108,7 @@ export interface RunInput {
   timeoutMs?: number | null;
   maxInvalidContractRetries?: number | null;
   noProgressHops?: number | null;
+  uiMode?: UiMode | null;
   configPath?: string | null;
   cwd?: string;
   runtime?: {

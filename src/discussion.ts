@@ -11,6 +11,8 @@ import {
 import { parseContractOutput } from "./parser";
 import { validateContract } from "./contract";
 import { resolveTimeoutMs } from "./runtime";
+import { RunSurface } from "./run-ui";
+import * as ui from "./ui";
 
 // --- Types ---
 
@@ -43,6 +45,7 @@ export interface DiscussionDeps {
   cwd: string;
   invokeAgentFn: InvokeAgentFn;
   askHumanInputFn: AskHumanInputFn;
+  surface: RunSurface;
   logger: { logEvent: (event: Record<string, unknown>) => void };
   timeoutOverrideMs?: number;
 }
@@ -114,25 +117,17 @@ const REVISE_SUFFIX = [
 // --- Output helpers ---
 
 function createPhaseWriter(
+  deps: DiscussionDeps,
   phase: string,
   agent: AgentName
 ): (chunk: string) => void {
-  const prefix = `[${agent}][${phase}] `;
-  let atLineStart = true;
-
   return (chunk: string): void => {
-    if (chunk === "") return;
-    let output = "";
-    for (const char of chunk) {
-      if (atLineStart) {
-        output += prefix;
-        atLineStart = false;
-      }
-      output += char;
-      if (char === "\n") atLineStart = true;
-    }
-    process.stdout.write(output);
+    deps.surface.writeAgentChunk(agent, phase, chunk);
   };
+}
+
+function emitNote(deps: DiscussionDeps, text: string, stream: "stdout" | "stderr" = "stdout"): void {
+  deps.surface.note(text, stream);
 }
 
 // --- Agent invocation ---
@@ -144,7 +139,7 @@ async function invokeAndParse(
   deps: DiscussionDeps
 ): Promise<Contract> {
   const timeoutMs = resolveTimeoutMs(agent, deps.config, deps.timeoutOverrideMs);
-  const writer = createPhaseWriter(phase, agent);
+  const writer = createPhaseWriter(deps, phase, agent);
 
   const invocation = await deps.invokeAgentFn(agent, prompt, {
     config: deps.config,
@@ -315,7 +310,7 @@ export async function runPlanAndDiscuss(
   const allRounds: DiscussionRound[] = [];
 
   // --- PLAN phase ---
-  console.log(`\n--- plan phase: ${primaryAgent} proposing approach ---`);
+  emitNote(deps, ui.planPhaseLabel(primaryAgent));
   deps.logger.logEvent({ type: "plan_phase_started", agent: primaryAgent });
 
   const planPrompt = `## Task\n\n${task}\n\n${PLAN_SUFFIX}`;
@@ -339,10 +334,10 @@ export async function runPlanAndDiscuss(
     confidence: planContract.confidence,
   });
 
-  console.log(`\n--- proposal: ${proposal.summary} ---`);
+  emitNote(deps, `\n${ui.proposalNote(proposal.summary)}`);
 
   if (participants.length === 0) {
-    console.log("--- no discussion participants available; skipping discussion ---");
+    emitNote(deps, `  ${ui.dim("No participants available; skipping discussion")}`);
     return {
       proposal,
       rounds: [],
@@ -354,9 +349,7 @@ export async function runPlanAndDiscuss(
 
   // --- DISCUSS phase ---
   for (let round = 0; round < discussion.max_rounds; round++) {
-    console.log(
-      `\n--- discussion round ${round + 1}/${discussion.max_rounds} ---`
-    );
+    emitNote(deps, ui.discussionRoundLabel(round + 1, discussion.max_rounds));
     deps.logger.logEvent({
       type: "discussion_round_started",
       round: round + 1,
@@ -366,7 +359,7 @@ export async function runPlanAndDiscuss(
     const roundFeedback: DiscussionRound[] = [];
 
     for (const participant of participants) {
-      console.log(`\n--- ${participant} reviewing proposal ---`);
+      emitNote(deps, ui.reviewingNote(participant));
 
       const discussPrompt = buildDiscussPrompt(task, proposal, allRounds);
       const discussContract = await invokeAndParse(
@@ -398,13 +391,7 @@ export async function runPlanAndDiscuss(
         confidence: feedback.confidence,
       });
 
-      console.log(
-        `--- ${participant}: ${feedback.sentiment}${
-          feedback.concerns.length > 0
-            ? ` (${feedback.concerns.length} concern(s))`
-            : ""
-        } ---`
-      );
+      emitNote(deps, ui.feedbackLine(participant, feedback.sentiment, feedback.concerns));
     }
 
     // Check consensus
@@ -412,7 +399,7 @@ export async function runPlanAndDiscuss(
     const hasPartialConsensus = checkPartialConsensus(roundFeedback);
 
     if (hasFullConsensus) {
-      console.log("\n--- full consensus reached ---");
+      emitNote(deps, ui.consensusNote("consensus"));
       deps.logger.logEvent({
         type: "discussion_consensus",
         round: round + 1,
@@ -428,9 +415,7 @@ export async function runPlanAndDiscuss(
     }
 
     if (hasPartialConsensus && !discussion.require_consensus) {
-      console.log(
-        "\n--- partial consensus reached (proceeding without full agreement) ---"
-      );
+      emitNote(deps, ui.consensusNote("partial-consensus"));
       deps.logger.logEvent({
         type: "discussion_consensus",
         round: round + 1,
@@ -447,9 +432,7 @@ export async function runPlanAndDiscuss(
 
     // No consensus yet — ask proposer to revise (unless last round)
     if (round < discussion.max_rounds - 1) {
-      console.log(
-        `\n--- no consensus; ${primaryAgent} revising proposal ---`
-      );
+      emitNote(deps, ui.revisionNote(primaryAgent));
       deps.logger.logEvent({
         type: "proposal_revision_started",
         round: round + 1,
@@ -477,14 +460,12 @@ export async function runPlanAndDiscuss(
         confidence: reviseContract.confidence,
       });
 
-      console.log(`\n--- revised proposal: ${proposal.summary} ---`);
+      emitNote(deps, `\n${ui.proposalNote(proposal.summary)}`);
     }
   }
 
   // Max rounds reached without consensus — escalate to human
-  console.log(
-    `\n--- discussion deadlock after ${discussion.max_rounds} round(s) ---`
-  );
+  emitNote(deps, ui.consensusNote("deadlock"));
   deps.logger.logEvent({
     type: "discussion_deadlock",
     rounds_completed: discussion.max_rounds,

@@ -27,6 +27,8 @@ import {
   runPlanAndDiscuss,
   inferDiscussionParticipants,
 } from "./discussion";
+import { createRunSurface, RunSurface } from "./run-ui";
+import * as ui from "./ui";
 
 export const CONTRACT_SUFFIX = [
   "---",
@@ -417,6 +419,7 @@ async function getContractWithRetry(params: {
   timeoutMs: number;
   maxInvalidContractRetries: number;
   invokeAgentFn: InvokeAgentFn;
+  surface: RunSurface;
 }): Promise<{
   contract: Contract;
   attempts: number;
@@ -435,6 +438,7 @@ async function getContractWithRetry(params: {
     timeoutMs,
     maxInvalidContractRetries,
     invokeAgentFn,
+    surface,
   } = params;
 
   const totalAttempts = maxInvalidContractRetries + 1;
@@ -446,7 +450,7 @@ async function getContractWithRetry(params: {
 
   for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
     if (attempt > 1) {
-      console.log(`\n[retry] requesting strict contract from ${agent} (attempt ${attempt}/${totalAttempts})`);
+      surface.note(ui.retryNote(agent, attempt, totalAttempts));
       logger.logEvent({
         type: "contract_retry",
         step_id: stepId,
@@ -455,11 +459,6 @@ async function getContractWithRetry(params: {
       });
     }
 
-    const writeStdout = createPrefixedWriter(process.stdout, formatTerminalPrefix(agent, stepScope));
-    const writeStderr = createPrefixedWriter(
-      process.stderr,
-      formatTerminalPrefix(agent, stepScope, "stderr")
-    );
     let renderedStdout = false;
     let lastOutputAt = Date.now();
     const heartbeatId = setInterval(() => {
@@ -468,9 +467,7 @@ async function getContractWithRetry(params: {
         return;
       }
 
-      process.stdout.write(
-        `\n${formatTerminalPrefix(agent, stepScope).trimEnd()} ... still working (${Math.floor(idleMs / 1000)}s idle)\n`
-      );
+      surface.note(ui.heartbeat(agent, stepScope, Math.floor(idleMs / 1000)));
     }, AGENT_HEARTBEAT_MS);
 
     const invocation = await (async () => {
@@ -482,14 +479,10 @@ async function getContractWithRetry(params: {
           sessionRef: currentSessionRef,
           onOutput: (chunk, stream) => {
             lastOutputAt = Date.now();
-            if (stream === "stderr") {
-              writeStderr(chunk);
-              return;
-            }
-            if (/\S/.test(chunk)) {
+            if (stream === "stdout" && /\S/.test(chunk)) {
               renderedStdout = true;
             }
-            writeStdout(chunk);
+            surface.writeAgentChunk(agent, stepScope, chunk, stream);
           },
         });
       } finally {
@@ -530,7 +523,7 @@ async function getContractWithRetry(params: {
       };
     }
 
-    console.error(`\n[warn] invalid contract from ${agent}: ${lastError.message}`);
+    surface.note(`\n${ui.contractErrorNote(agent, lastError.message)}`, "stderr");
     logger.logEvent({
       type: "contract_invalid",
       step_id: stepId,
@@ -582,6 +575,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
   const askHumanInputFn: AskHumanInputFn = input.runtime?.askHumanInput || defaultAskHumanInput;
   const getRepoStateSignatureFn: RepoStateFn =
     input.runtime?.getRepoStateSignature || defaultGetRepoStateSignature;
+  const surface = createRunSurface({ mode: input.uiMode });
 
   const maxHops = Number.isInteger(input.maxHops) && (input.maxHops as number) > 0 ? (input.maxHops as number) : config.max_hops;
   const maxInvalidContractRetries =
@@ -617,6 +611,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
       message: currentMessage,
     },
   ];
+  let finalScreenMessage: string | null = null;
 
   const handleSignal = (signalName: string): void => {
     if (signalHandled) {
@@ -630,7 +625,8 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
       step_id: activeStepId,
     });
     lock.release();
-    console.error(`\n[signal] ${signalName} received. Released lock and exiting.`);
+    surface.stop();
+    console.error(ui.signalNote(signalName));
     process.exit(130);
   };
 
@@ -639,14 +635,27 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
 
   const effectiveTimeout = timeoutOverrideMs || config.agent_timeout_ms;
 
-  console.log(`run_id=${runId}`);
-  console.log(`cwd=${cwd}`);
-  console.log(`lock_file=${lock.lockPath}`);
-  console.log(`log_file=${logger.logPath}`);
-  console.log(`primary_agent=${currentAgent}`);
-  console.log(`max_hops=${maxHops}`);
-  console.log(`agent_timeout_ms=${effectiveTimeout}`);
-  console.log(`no_progress_hops=${noProgressHops}`);
+  const pkg = (() => {
+    try {
+      return require("../package.json") as { version?: string };
+    } catch {
+      return {};
+    }
+  })();
+  surface.startRun({
+    version: pkg.version,
+    task: input.task,
+    primaryAgent: currentAgent,
+    maxHops,
+    timeoutMs: effectiveTimeout,
+    discussionEnabled: config.discussion.enabled,
+    reviewGate: config.review_gate,
+    logPath: logger.logPath,
+    lockPath: lock.lockPath,
+    runId,
+    cwd,
+    noProgressHops,
+  });
 
   logger.logEvent({
     type: "run_started",
@@ -662,8 +671,8 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
   });
 
   const finishRun = (stepId: number, message: string): OrchestratorResult => {
-    console.log("\n=== done ===");
-    console.log(message);
+    surface.done(message);
+    finalScreenMessage = ui.doneMessage(message);
     logger.logEvent({
       type: "run_completed",
       status: "done",
@@ -678,6 +687,9 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
     };
   };
 
+  const requestHumanInput = (payload: HumanInputPayload): Promise<string> =>
+    surface.askHumanInput(payload, askHumanInputFn);
+
   try {
     if (!input.runtime?.invokeAgent) {
       validateConfiguredAgentsAvailable(config, currentAgent);
@@ -691,11 +703,13 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
           : inferDiscussionParticipants(config, currentAgent);
 
       if (discussionParticipants.length > 0) {
-        console.log("\n=== plan & discuss phase ===");
-        console.log(`proposer: ${currentAgent}`);
-        console.log(`participants: ${discussionParticipants.join(", ")}`);
-        console.log(
-          `max_rounds: ${config.discussion.max_rounds} | require_consensus: ${config.discussion.require_consensus}`
+        surface.note(
+          ui.discussionBanner(
+            currentAgent,
+            discussionParticipants,
+            config.discussion.max_rounds,
+            config.discussion.require_consensus
+          )
         );
 
         logger.logEvent({
@@ -713,7 +727,8 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
             config,
             cwd,
             invokeAgentFn,
-            askHumanInputFn: askHumanInputFn,
+            askHumanInputFn: requestHumanInput,
+            surface,
             logger,
             timeoutOverrideMs,
           }
@@ -737,10 +752,8 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
         currentMessageSpeaker = currentAgent;
         hopCount += discussResult.totalHops;
 
-        console.log(
-          `\n=== discussion complete: ${discussResult.status} (${discussResult.totalHops} hops used) ===`
-        );
-        console.log("=== entering implementation phase ===");
+        surface.note(ui.discussionCompleteNote(discussResult.status, discussResult.totalHops));
+        surface.note(ui.implementationHeader());
 
         logger.logEvent({
           type: "discussion_phase_completed",
@@ -750,9 +763,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
           rounds_count: discussResult.rounds.length,
         });
       } else {
-        console.log(
-          "\n[discussion] enabled but no participants available; skipping"
-        );
+        surface.note(`\n  ${ui.dim("Discussion enabled but no participants available; skipping")}`);
       }
     }
 
@@ -760,9 +771,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
       const stepId = hopCount + 1;
       activeStepId = stepId;
       const timeoutMs = resolveTimeoutMs(currentAgent, config, timeoutOverrideMs);
-      console.log(
-        `\n=== step ${stepId} | agent: ${currentAgent} | stage: ${currentStepPromptScope} | timeout_ms: ${timeoutMs} ===`
-      );
+      surface.startStep(stepId, currentAgent, currentStepPromptScope, timeoutMs);
       logger.logEvent({
         type: "step_started",
         step_id: stepId,
@@ -816,6 +825,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
           timeoutMs,
           maxInvalidContractRetries,
           invokeAgentFn,
+          surface,
         });
         contract = result.contract;
         attempts = result.attempts;
@@ -846,7 +856,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
                   `Provide next instruction for ${currentAgent}.`,
                 footer: buildHumanGateFooter(),
               };
-        const humanResponse = await askHumanInputFn(contractFailurePayload);
+        const humanResponse = await requestHumanInput(contractFailurePayload);
 
         if (humanResponse === "") {
           throw new Error("No human input provided after failure; stopping run");
@@ -880,11 +890,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
       }
 
       if (!renderedStdout) {
-        const writeStdout = createPrefixedWriter(
-          process.stdout,
-          formatTerminalPrefix(currentAgent, currentStepPromptScope)
-        );
-        writeStdout(`${contract.message}\n`);
+        surface.writeAgentChunk(currentAgent, currentStepPromptScope, `${contract.message}\n`);
       }
 
       threadState.sessionRef = resolvedSessionRef;
@@ -901,7 +907,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
           error: (error as Error).message,
         });
 
-        const humanResponse = await askHumanInputFn({
+        const humanResponse = await requestHumanInput({
           message: `Routing error: ${(error as Error).message}\nProvide next instruction for ${currentAgent}.`,
           footer: buildHumanGateFooter(),
         });
@@ -957,7 +963,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
           repoChangedSinceLastReview === null
             ? "repo-state-unavailable"
             : "repo-changed-since-review";
-        console.log(`\n[review-gate] primary→done intercepted; redirecting to review`);
+        surface.note(`\n${ui.reviewGateNote()}`);
         logger.logEvent({
           type: "review_gate_redirect",
           step_id: stepId,
@@ -979,9 +985,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
         reviewIterationCount < config.max_review_iterations
       ) {
         reviewIterationCount += 1;
-        console.log(
-          `\n[review-iter] changes requested (iteration ${reviewIterationCount}/${config.max_review_iterations}); routing back to primary`
-        );
+        surface.note(`\n${ui.reviewIterationNote(reviewIterationCount, config.max_review_iterations)}`);
         logger.logEvent({
           type: "review_iteration_redirect",
           step_id: stepId,
@@ -1008,11 +1012,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
         currentStepPromptScope === "review" &&
         contract.review_verdict === "approve"
       ) {
-        if (reviewIterationCount > 0) {
-          console.log(
-            `\n[review-iter] approved after ${reviewIterationCount} review iteration(s)`
-          );
-        }
+        surface.note(`\n${ui.reviewApprovedNote(reviewIterationCount)}`);
         logger.logEvent({
           type: "review_approved",
           step_id: stepId,
@@ -1032,7 +1032,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
 
       // --- Pair return: force routing back to the invoking agent ---
       if (pairReturn !== null) {
-        console.log(`\n[pair] returning to ${pairReturn.returnAgent}`);
+        surface.note(`\n${ui.pairReturnNote(pairReturn.returnAgent)}`);
         logger.logEvent({
           type: "pair_return",
           step_id: stepId,
@@ -1058,7 +1058,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
             session_ref: threadState.sessionRef,
           });
 
-          const decision = await askHumanInputFn({
+          const decision = await requestHumanInput({
             heading: "=== human response awaited ===",
             message: contract.message,
             showMessage: false,
@@ -1084,7 +1084,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
 
           let followUp = decision;
           if (normalizedDecision === "continue") {
-            followUp = await askHumanInputFn({
+            followUp = await requestHumanInput({
               heading: "=== human response awaited ===",
               showMessage: false,
               footer: buildHumanGateFooter("Enter the follow-up message or question for that agent."),
@@ -1118,7 +1118,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
       }
 
       if (target === "human") {
-        const response = await askHumanInputFn({
+        const response = await requestHumanInput({
           heading: "=== human response awaited ===",
           message: contract.message,
           questions: contract.questions,
@@ -1152,7 +1152,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
 
       // --- Pair invocation: save return context and route to pair agent ---
       if (routedAction === "pair") {
-        console.log(`\n[pair] ${currentAgent} invoking pair session -> ${target}`);
+        surface.note(`\n${ui.pairInvokeNote(currentAgent, target as string)}`);
         logger.logEvent({
           type: "pair_invoked",
           step_id: stepId,
@@ -1183,7 +1183,7 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
           });
 
           if (noProgressCount >= noProgressHops) {
-            const response = await askHumanInputFn({
+            const response = await requestHumanInput({
               message:
                 `No repository changes detected for ${noProgressCount} consecutive agent steps. ` +
                 "Provide guidance for the next agent.",
@@ -1230,7 +1230,8 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
     }
 
     const stopMessage = `Reached max_hops=${maxHops}.`;
-    console.log(`\n=== max hops reached ===\n${stopMessage}`);
+    surface.note(ui.maxHopsNote(maxHops));
+    finalScreenMessage = `${ui.maxHopsNote(maxHops)}\n${stopMessage}`;
     logger.logEvent({
       type: "run_completed",
       status: "max-hops",
@@ -1246,9 +1247,13 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
   } finally {
     process.off("SIGINT", handleSignal);
     process.off("SIGTERM", handleSignal);
+    surface.stop();
     lock.release();
     logger.logEvent({
       type: "run_finalized",
     });
+    if (surface.mode === "tui" && finalScreenMessage) {
+      console.log(finalScreenMessage);
+    }
   }
 }

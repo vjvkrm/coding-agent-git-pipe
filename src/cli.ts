@@ -1,35 +1,37 @@
 import path from "path";
 import { writeDefaultConfig } from "./config";
 import { runOrchestrator } from "./orchestrator";
-import { AgentName } from "./types";
+import { AgentName, UiMode } from "./types";
 
 const pkg = require("../package.json") as { version?: string };
 
 function printHelp(): void {
-  console.log("agent-pipe (cagp)");
-  console.log("");
-  console.log('Usage:\n  agent-pipe init [options]\n  agent-pipe run "<task>" [options]');
-  console.log("");
-  console.log("Commands:");
-  console.log("  init                        Create a starter .agentpipe.json in the target repo");
-  console.log("  run                         Execute an orchestration task");
-  console.log("");
-  console.log("Run options:");
-  console.log("  --primary-agent <name>     Primary agent (claude|codex|gemini)");
-  console.log("  --discuss                  Enable plan & discuss phase before implementation");
-  console.log("  --max-hops <number>        Maximum routing hops before pause");
-  console.log("  --timeout-ms <number>      Per-agent timeout in milliseconds");
-  console.log("  --max-retries <number>     Contract parse retries (default from config)");
-  console.log("  --no-progress-hops <num>   Ask human if repo doesn't change for N steps");
-  console.log("  --config <path>            Path to config JSON (default: .agentpipe.json)");
-  console.log("  --cwd <path>               Working directory (default: current directory)");
-  console.log("");
-  console.log("Init options:");
-  console.log("  --config <path>            Path to write the config JSON (default: .agentpipe.json)");
-  console.log("  --cwd <path>               Target repo directory (default: current directory)");
-  console.log("  --force                    Overwrite an existing config file");
-  console.log("  -h, --help                 Show help");
-  console.log("  -v, --version              Show version");
+  const B = "\x1b[1m";
+  const D = "\x1b[2m";
+  const R = "\x1b[0m";
+  console.log(`\n  ${B}agent-pipe${R} ${D}(cagp)${R} — AI engineering team orchestrator\n`);
+  console.log(`  ${B}Usage${R}`);
+  console.log(`    agent-pipe init ${D}[options]${R}`);
+  console.log(`    agent-pipe run ${D}"<task>" [options]${R}\n`);
+  console.log(`  ${B}Commands${R}`);
+  console.log(`    ${B}init${R}                        Create a starter .agentpipe.json`);
+  console.log(`    ${B}run${R}                         Execute an orchestration task\n`);
+  console.log(`  ${B}Run options${R}`);
+  console.log(`    --primary-agent <name>     Primary agent ${D}(claude|codex|gemini)${R}`);
+  console.log(`    --discuss                  Enable plan & discuss phase`);
+  console.log(`    --max-hops <number>        Maximum routing hops`);
+  console.log(`    --timeout-ms <number>      Per-agent timeout in milliseconds`);
+  console.log(`    --max-retries <number>     Contract parse retries`);
+  console.log(`    --no-progress-hops <num>   Ask human if repo stalls for N steps`);
+  console.log(`    --ui <mode>                UI mode ${D}(auto|plain|tui)${R}`);
+  console.log(`    --config <path>            Config path ${D}(default: .agentpipe.json)${R}`);
+  console.log(`    --cwd <path>               Working directory ${D}(default: cwd)${R}\n`);
+  console.log(`  ${B}Init options${R}`);
+  console.log(`    --config <path>            Config output path`);
+  console.log(`    --cwd <path>               Target repo directory`);
+  console.log(`    --force                    Overwrite existing config`);
+  console.log(`    -h, --help                 Show help`);
+  console.log(`    -v, --version              Show version\n`);
 }
 
 function parseRunArgs(args: string[]): {
@@ -40,6 +42,7 @@ function parseRunArgs(args: string[]): {
   timeoutMs: number | null;
   maxRetries: number | null;
   noProgressHops: number | null;
+  uiMode: UiMode | null;
   configPathRaw: string | null;
   configPath: string | null;
   cwd: string;
@@ -52,6 +55,7 @@ function parseRunArgs(args: string[]): {
     timeoutMs: null as number | null,
     maxRetries: null as number | null,
     noProgressHops: null as number | null,
+    uiMode: null as UiMode | null,
     configPathRaw: null as string | null,
     configPath: null as string | null,
     cwd: process.cwd(),
@@ -92,6 +96,12 @@ function parseRunArgs(args: string[]): {
 
     if (arg === "--no-progress-hops" && next) {
       parsed.noProgressHops = Number(next);
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--ui" && next) {
+      parsed.uiMode = next as UiMode;
       i += 1;
       continue;
     }
@@ -243,6 +253,16 @@ export async function main(argv = process.argv): Promise<void> {
     }
   }
 
+  if (
+    parsed.uiMode !== null &&
+    parsed.uiMode !== "auto" &&
+    parsed.uiMode !== "plain" &&
+    parsed.uiMode !== "tui"
+  ) {
+    console.error("--ui must be one of: auto, plain, tui");
+    process.exit(1);
+  }
+
   const result = await runOrchestrator({
     task,
     primaryAgent: parsed.primaryAgent,
@@ -251,6 +271,7 @@ export async function main(argv = process.argv): Promise<void> {
     timeoutMs: parsed.timeoutMs,
     maxInvalidContractRetries: parsed.maxRetries,
     noProgressHops: parsed.noProgressHops,
+    uiMode: parsed.uiMode,
     configPath: parsed.configPath,
     cwd: parsed.cwd,
   });
