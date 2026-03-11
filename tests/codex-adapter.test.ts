@@ -81,6 +81,28 @@ test("normalizeCodexJsonOutput prefers the latest message when progress updates 
   assert.equal(normalizeCodexJsonOutput(output), "Scanning repo complete");
 });
 
+test("normalizeCodexJsonOutput handles live item.updated agent messages", () => {
+  const output = [
+    '{"type":"thread.started","thread_id":"thread-123"}',
+    '{"type":"item.updated","item":{"id":"item_1","type":"agent_message","message":"Scanning repo"}}',
+    '{"type":"item.updated","item":{"id":"item_1","type":"agent_message","message":"Scanning repo complete"}}',
+  ].join("\n");
+
+  assert.equal(normalizeCodexJsonOutput(output), "Scanning repo complete");
+});
+
+test("normalizeCodexJsonOutput prefers assistant message items over reasoning items", () => {
+  const output = [
+    '{"type":"item.updated","item":{"id":"item_r1","type":"reasoning","text":"Inspecting files"}}',
+    '{"type":"item.completed","item":{"id":"item_m1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Final answer\\n```json\\n{\\"contract_version\\":\\"1\\",\\"next_action\\":\\"done\\",\\"message\\":\\"ok\\"}\\n```"}]}}',
+  ].join("\n");
+
+  assert.equal(
+    normalizeCodexJsonOutput(output),
+    'Final answer\n```json\n{"contract_version":"1","next_action":"done","message":"ok"}\n```'
+  );
+});
+
 test("resolveCodexStreamingCommand keeps custom codex adapters on the JSON streaming path", () => {
   const config = makeConfig({
     adapters: {

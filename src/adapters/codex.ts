@@ -7,7 +7,6 @@ import {
   extractSessionRefFromJsonLines,
   resolveAdapterCommand,
   runAdapter,
-  runAdapterCommand,
   spawnAdapterProcess,
 } from "./base";
 
@@ -28,34 +27,293 @@ function parseCodexJsonLine(line: string): unknown | null {
   }
 }
 
-function getCodexAgentMessage(event: unknown): string {
-  if (event === null || typeof event !== "object" || Array.isArray(event)) {
+function asCodexRecord(value: unknown): Record<string, unknown> | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  return value as Record<string, unknown>;
+}
+
+function normalizeCodexType(value: unknown): string {
+  if (typeof value !== "string" || value.trim() === "") {
     return "";
   }
 
-  const value = event as {
-    msg?: {
-      type?: unknown;
-      message?: unknown;
-    };
-  };
+  return value
+    .replace(/\//g, ".")
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase();
+}
 
-  return value.msg?.type === "agent_message" && typeof value.msg.message === "string"
-    ? value.msg.message
-    : "";
+function getCodexString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function firstNonEmptyString(...values: string[]): string {
+  for (const value of values) {
+    if (value !== "") {
+      return value;
+    }
+  }
+
+  return "";
+}
+
+function extractCodexContentText(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (!Array.isArray(value)) {
+    return "";
+  }
+
+  return value
+    .map((entry) => {
+      if (typeof entry === "string") {
+        return entry;
+      }
+
+      const record = asCodexRecord(entry);
+      if (!record) {
+        return "";
+      }
+
+      return firstNonEmptyString(
+        getCodexString(record.text),
+        getCodexString(record.content),
+        extractCodexContentText(record.content),
+        extractCodexContentText(record.parts)
+      );
+    })
+    .join("");
+}
+
+function getCodexItemId(value: unknown): string {
+  const record = asCodexRecord(value);
+  if (!record) {
+    return "";
+  }
+
+  return firstNonEmptyString(
+    getCodexString(record.id),
+    getCodexString(record.item_id),
+    getCodexString(record.itemId)
+  );
+}
+
+function getCodexItemType(value: unknown): string {
+  const record = asCodexRecord(value);
+  return record ? normalizeCodexType(record.type) : "";
+}
+
+function getCodexItemText(value: unknown): string {
+  const record = asCodexRecord(value);
+  if (!record) {
+    return "";
+  }
+
+  return firstNonEmptyString(
+    getCodexString(record.text),
+    getCodexString(record.message),
+    getCodexString(record.content),
+    extractCodexContentText(record.content),
+    extractCodexContentText(record.parts)
+  );
+}
+
+function getCodexEventText(value: unknown): string {
+  const record = asCodexRecord(value);
+  if (!record) {
+    return typeof value === "string" ? value : "";
+  }
+
+  return firstNonEmptyString(
+    getCodexString(record.delta),
+    getCodexString(record.text),
+    getCodexString(record.message),
+    getCodexString(record.content),
+    extractCodexContentText(record.content),
+    getCodexEventText(record.delta),
+    getCodexItemText(record.item),
+    getCodexEventText(record.payload)
+  );
+}
+
+function getCodexAgentMessage(event: unknown): string {
+  const record = asCodexRecord(event);
+  if (!record) {
+    return "";
+  }
+
+  const legacyMessage = getCodexString(asCodexRecord(record.msg)?.message);
+  if (normalizeCodexType(asCodexRecord(record.msg)?.type) === "agent_message" && legacyMessage !== "") {
+    return legacyMessage;
+  }
+
+  const eventType = normalizeCodexType(record.type);
+  const item = asCodexRecord(record.item);
+  const itemType = getCodexItemType(item);
+  const itemRole = normalizeCodexType(item?.role);
+
+  if (
+    (eventType === "item.updated" || eventType === "item.completed") &&
+    (itemType === "agent_message" ||
+      itemType === "assistant_message" ||
+      (itemType === "message" && (itemRole === "" || itemRole === "assistant")))
+  ) {
+    return getCodexItemText(item);
+  }
+
+  if (eventType === "agent_message" || eventType === "assistant_message") {
+    return getCodexEventText(record);
+  }
+
+  return "";
+}
+
+function getCodexAgentMessageDelta(event: unknown): string {
+  const record = asCodexRecord(event);
+  if (!record) {
+    return "";
+  }
+
+  const eventType = normalizeCodexType(record.type);
+  if (eventType === "item.agent_message.delta" || eventType === "agent_message_delta") {
+    return getCodexEventText(record);
+  }
+
+  return "";
+}
+
+function getCodexReasoningText(event: unknown): {
+  id: string;
+  text: string;
+  delta: boolean;
+  completed: boolean;
+} | null {
+  const record = asCodexRecord(event);
+  if (!record) {
+    return null;
+  }
+
+  const eventType = normalizeCodexType(record.type);
+  if (
+    eventType === "item.reasoning.text_delta" ||
+    eventType === "item.reasoning.summary_text_delta" ||
+    eventType === "item.reasoning.summary_part_added" ||
+    eventType === "reasoning_text_delta" ||
+    eventType === "reasoning_summary_text_delta"
+  ) {
+    const text = getCodexEventText(record);
+    if (text === "") {
+      return null;
+    }
+
+    return {
+      id: firstNonEmptyString(
+        getCodexItemId(record),
+        getCodexItemId(record.item),
+        getCodexString(record.reasoning_id),
+        getCodexString(record.reasoningId),
+        "__reasoning__"
+      ),
+      text,
+      delta: true,
+      completed: false,
+    };
+  }
+
+  const item = asCodexRecord(record.item);
+  if (
+    (eventType === "item.updated" || eventType === "item.completed") &&
+    getCodexItemType(item) === "reasoning"
+  ) {
+    const text = getCodexItemText(item);
+    if (text === "") {
+      return null;
+    }
+
+    return {
+      id: firstNonEmptyString(getCodexItemId(item), "__reasoning__"),
+      text,
+      delta: false,
+      completed: eventType === "item.completed",
+    };
+  }
+
+  return null;
+}
+
+function getCodexErrorText(event: unknown): string {
+  const record = asCodexRecord(event);
+  if (!record) {
+    return "";
+  }
+
+  const eventType = normalizeCodexType(record.type);
+  if (eventType === "error") {
+    return firstNonEmptyString(getCodexString(record.message), getCodexEventText(record));
+  }
+
+  const item = asCodexRecord(record.item);
+  if (eventType === "item.completed" && getCodexItemType(item) === "error") {
+    return firstNonEmptyString(getCodexItemText(item), getCodexString(item?.message));
+  }
+
+  return "";
+}
+
+function getCodexCommandEvent(event: unknown): {
+  id: string;
+  command: string;
+  output: string;
+  started: boolean;
+  completed: boolean;
+} | null {
+  const record = asCodexRecord(event);
+  if (!record) {
+    return null;
+  }
+
+  const eventType = normalizeCodexType(record.type);
+  const item = asCodexRecord(record.item);
+  if (!item || getCodexItemType(item) !== "command_execution") {
+    return null;
+  }
+
+  return {
+    id: firstNonEmptyString(getCodexItemId(item), "__command__"),
+    command: getCodexString(item.command),
+    output: firstNonEmptyString(
+      getCodexString(item.aggregated_output),
+      getCodexString(item.aggregatedOutput)
+    ),
+    started: eventType === "item.started",
+    completed: eventType === "item.completed",
+  };
 }
 
 export function normalizeCodexJsonOutput(output: string): string {
   let lastAgentMessage = "";
+  let messageDelta = "";
 
   for (const line of output.split(/\r?\n/)) {
-    const message = getCodexAgentMessage(parseCodexJsonLine(line));
+    const parsed = parseCodexJsonLine(line);
+    const message = getCodexAgentMessage(parsed);
     if (message !== "") {
       lastAgentMessage = message;
+      continue;
+    }
+
+    const delta = getCodexAgentMessageDelta(parsed);
+    if (delta !== "") {
+      messageDelta += delta;
     }
   }
 
-  return lastAgentMessage || output.trim();
+  return lastAgentMessage || messageDelta || output.trim();
 }
 
 function isCodexCliCommand(commandParts: string[]): boolean {
@@ -179,6 +437,11 @@ function runCodexStreamingCommand(
   let stdoutBuffer = "";
   let lastRenderedMessage = "";
   let emittedStdout = false;
+  let stdoutEndsWithNewline = true;
+  let activeTextMode: "message" | "thinking" | null = null;
+  const renderedReasoningText = new Map<string, string>();
+  const renderedCommandIds = new Set<string>();
+  const renderedCommandOutput = new Map<string, string>();
 
   const SIGKILL_GRACE_MS = 5000;
   let killTimerId: ReturnType<typeof setTimeout> | undefined;
@@ -200,23 +463,134 @@ function runCodexStreamingCommand(
     const lines = stdoutBuffer.split(/\r?\n/);
     stdoutBuffer = lines.pop() || "";
 
+    const emitStdout = (value: string): void => {
+      if (value === "") {
+        return;
+      }
+
+      options.onOutput(value, "stdout");
+      emittedStdout = true;
+      stdoutEndsWithNewline = value.endsWith("\n");
+    };
+
+    const ensureOutputBreak = (): void => {
+      if (emittedStdout && !stdoutEndsWithNewline) {
+        emitStdout("\n");
+      }
+    };
+
+    const emitStructuredLine = (value: string): void => {
+      if (value === "") {
+        return;
+      }
+
+      ensureOutputBreak();
+      emitStdout(`${value}\n`);
+      activeTextMode = null;
+    };
+
     for (const line of lines) {
-      const message = getCodexAgentMessage(parseCodexJsonLine(line));
+      const parsed = parseCodexJsonLine(line);
+      const commandEvent = getCodexCommandEvent(parsed);
+      if (commandEvent) {
+        if (commandEvent.command !== "" && !renderedCommandIds.has(commandEvent.id)) {
+          emitStructuredLine(`(tool) $ ${commandEvent.command}`);
+          renderedCommandIds.add(commandEvent.id);
+        }
+
+        const previousOutput = renderedCommandOutput.get(commandEvent.id) || "";
+        if (commandEvent.output !== "" && commandEvent.output !== previousOutput) {
+          ensureOutputBreak();
+          if (previousOutput !== "" && commandEvent.output.startsWith(previousOutput)) {
+            emitStdout(commandEvent.output.slice(previousOutput.length));
+          } else {
+            emitStdout(commandEvent.output);
+          }
+          renderedCommandOutput.set(commandEvent.id, commandEvent.output);
+        }
+
+        if (commandEvent.completed) {
+          if (commandEvent.output !== "" && !commandEvent.output.endsWith("\n")) {
+            emitStdout("\n");
+          }
+          activeTextMode = null;
+        }
+      }
+
+      const reasoning = getCodexReasoningText(parsed);
+      if (reasoning) {
+        if (reasoning.delta) {
+          if (activeTextMode !== "thinking") {
+            ensureOutputBreak();
+            emitStdout("(thinking) ");
+            activeTextMode = "thinking";
+          }
+          emitStdout(reasoning.text);
+          const previous = renderedReasoningText.get(reasoning.id) || "";
+          renderedReasoningText.set(reasoning.id, `${previous}${reasoning.text}`);
+        } else {
+          const previous = renderedReasoningText.get(reasoning.id) || "";
+          if (reasoning.text !== previous) {
+            if (reasoning.text.startsWith(previous)) {
+              if (activeTextMode !== "thinking") {
+                ensureOutputBreak();
+                emitStdout("(thinking) ");
+                activeTextMode = "thinking";
+              }
+              const nextDelta = reasoning.text.slice(previous.length);
+              if (nextDelta !== "") {
+                emitStdout(nextDelta);
+              }
+            } else {
+              ensureOutputBreak();
+              emitStdout(`(thinking) ${reasoning.text}`);
+              activeTextMode = "thinking";
+            }
+
+            renderedReasoningText.set(reasoning.id, reasoning.text);
+          }
+        }
+
+        if (reasoning.completed && activeTextMode === "thinking") {
+          ensureOutputBreak();
+          activeTextMode = null;
+        }
+      }
+
+      const errorText = getCodexErrorText(parsed);
+      if (errorText !== "") {
+        emitStructuredLine(`(error) ${errorText}`);
+      }
+
+      const delta = getCodexAgentMessageDelta(parsed);
+      if (delta !== "") {
+        if (activeTextMode === "thinking") {
+          ensureOutputBreak();
+        }
+        emitStdout(delta);
+        activeTextMode = "message";
+      }
+
+      const message = getCodexAgentMessage(parsed);
       if (message === "" || message === lastRenderedMessage) {
         continue;
       }
 
-      if (message.startsWith(lastRenderedMessage)) {
-        const delta = message.slice(lastRenderedMessage.length);
-        if (delta !== "") {
-          options.onOutput(emittedStdout ? `\n${delta}` : delta, "stdout");
-          emittedStdout = true;
-        }
-      } else {
-        options.onOutput(emittedStdout ? `\n${message}` : message, "stdout");
-        emittedStdout = true;
+      if (activeTextMode === "thinking") {
+        ensureOutputBreak();
       }
 
+      if (message.startsWith(lastRenderedMessage)) {
+        const nextDelta = message.slice(lastRenderedMessage.length);
+        if (nextDelta !== "") {
+          emitStdout(nextDelta);
+        }
+      } else {
+        ensureOutputBreak();
+        emitStdout(message);
+      }
+
+      activeTextMode = "message";
       lastRenderedMessage = message;
     }
   });
@@ -245,7 +619,7 @@ function runCodexStreamingCommand(
       }
 
       const stdout = normalizeCodexJsonOutput(rawStdout);
-      if (emittedStdout && stdout !== "" && !lastRenderedMessage.endsWith("\n")) {
+      if (emittedStdout && stdout !== "" && !stdoutEndsWithNewline) {
         options.onOutput("\n", "stdout");
       }
 
@@ -279,7 +653,7 @@ function runCodexStreamingCommand(
         timeoutMs: options.timeoutMs,
         stdout,
         stderr,
-        combined: `${stdout}${stderr}`,
+        combined: `${rawStdout}${stderr}`,
         durationMs: endedAt - startedAt,
         sessionRef,
       });
