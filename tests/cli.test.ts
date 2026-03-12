@@ -4,7 +4,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI_ENTRY = path.join(PROJECT_ROOT, "src", "cli.ts");
@@ -21,6 +21,22 @@ function runCli(args: string[]) {
   return spawnSync(process.execPath, ["--import", "tsx", CLI_ENTRY, ...args], {
     cwd: PROJECT_ROOT,
     encoding: "utf8",
+  });
+}
+
+function runInteractiveCli(input: string) {
+  const entryUrl = pathToFileURL(CLI_ENTRY).href;
+  const script = `
+Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+const cliModule = await import(${JSON.stringify(entryUrl)});
+await cliModule.default.main(["node", "agent-pipe"]);
+`;
+
+  return spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
+    cwd: PROJECT_ROOT,
+    encoding: "utf8",
+    input,
   });
 }
 
@@ -79,4 +95,14 @@ test("init overwrites an existing config with --force", () => {
   } finally {
     cleanupTempDir(cwd);
   }
+});
+
+test("interactive mode keeps the first command instead of treating it like EOF", () => {
+  const result = runInteractiveCli("/help\n/quit\n");
+
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /Usage/);
+  assert.match(result.stdout, /Commands: \/help, \/quit/);
+  assert.match(result.stdout, /> /);
+  assert.match(result.stdout, /Bye!/);
 });

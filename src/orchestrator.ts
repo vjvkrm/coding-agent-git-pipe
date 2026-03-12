@@ -611,8 +611,6 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
       message: currentMessage,
     },
   ];
-  let finalScreenMessage: string | null = null;
-
   const handleSignal = (signalName: string): void => {
     if (signalHandled) {
       return;
@@ -672,7 +670,6 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
 
   const finishRun = (stepId: number, message: string): OrchestratorResult => {
     surface.done(message);
-    finalScreenMessage = ui.doneMessage(message);
     logger.logEvent({
       type: "run_completed",
       status: "done",
@@ -1231,7 +1228,6 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
 
     const stopMessage = `Reached max_hops=${maxHops}.`;
     surface.note(ui.maxHopsNote(maxHops));
-    finalScreenMessage = `${ui.maxHopsNote(maxHops)}\n${stopMessage}`;
     logger.logEvent({
       type: "run_completed",
       status: "max-hops",
@@ -1252,8 +1248,5 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
     logger.logEvent({
       type: "run_finalized",
     });
-    if (surface.mode === "tui" && finalScreenMessage) {
-      console.log(finalScreenMessage);
-    }
   }
 }
