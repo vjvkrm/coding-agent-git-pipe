@@ -3,12 +3,22 @@ import { PassThrough } from "node:stream";
 import test from "node:test";
 import { createRunSurface, extractVisibleAgentText, resolveUiMode } from "../src/run-ui";
 
+process.env.AGENT_PIPE_INK_DEBUG = "1";
+
 class FakeTtyInput extends PassThrough {
   isTTY = true;
   rawMode = false;
 
   setRawMode(value: boolean): this {
     this.rawMode = value;
+    return this;
+  }
+
+  ref(): this {
+    return this;
+  }
+
+  unref(): this {
     return this;
   }
 }
@@ -32,6 +42,29 @@ class FakeTtyOutput extends PassThrough {
 
     return super.write(chunk, encoding, callback);
   }
+}
+
+async function flushInk(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 50));
+}
+
+async function waitForOutput(
+  read: () => string,
+  pattern: RegExp,
+  timeoutMs = 500
+): Promise<string> {
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    const output = read();
+    if (pattern.test(output)) {
+      return output;
+    }
+
+    await flushInk();
+  }
+
+  return read();
 }
 
 test("resolveUiMode honors explicit mode overrides", () => {
@@ -88,7 +121,7 @@ test("extractVisibleAgentText hides an incomplete contract block from the transc
   assert.equal(extractVisibleAgentText(raw), "Thinking through the repo");
 });
 
-test("tui outputs step banners and agent chunks to stdout", () => {
+test("tui outputs step banners and agent chunks to stdout", async () => {
   const stdin = new FakeTtyInput() as unknown as NodeJS.ReadStream;
   const stdout = new FakeTtyOutput() as unknown as NodeJS.WriteStream & FakeTtyOutput;
   const stderr = new FakeTtyOutput() as unknown as NodeJS.WriteStream;
@@ -101,20 +134,20 @@ test("tui outputs step banners and agent chunks to stdout", () => {
 
   try {
     surface.startStep(1, "claude", "primary", 60000);
-    const stepOutput = stdout.writes.join("");
+    const stepOutput = await waitForOutput(() => stdout.writes.join(""), /Step/);
     assert.match(stepOutput, /Step/);
     assert.match(stepOutput, /Claude/i);
 
     stdout.writes.length = 0;
     surface.writeAgentChunk("claude", "primary", "Hello world\n");
-    const chunkOutput = stdout.writes.join("");
+    const chunkOutput = await waitForOutput(() => stdout.writes.join(""), /Hello world/);
     assert.match(chunkOutput, /Hello world/);
   } finally {
     surface.stop();
   }
 });
 
-test("tui askHumanInput returns typed answer via readline", async () => {
+test("tui askHumanInput returns typed answer via Ink input", async () => {
   const stdin = new FakeTtyInput() as unknown as NodeJS.ReadStream;
   const stdout = new FakeTtyOutput() as unknown as NodeJS.WriteStream & FakeTtyOutput;
   const stderr = new FakeTtyOutput() as unknown as NodeJS.WriteStream;
@@ -135,8 +168,12 @@ test("tui askHumanInput returns typed answer via readline", async () => {
       async () => ""
     );
 
-    // Simulate user typing a line
-    (stdin as unknown as PassThrough).write("my answer\n");
+    // Wait for the Ink InputOnly component to mount and render its bordered prompt
+    await waitForOutput(() => stdout.writes.join(""), /Reply/, 5000);
+    // Ink's TextInput requires text and submit key (\r) as separate writes
+    (stdin as unknown as PassThrough).write("my answer");
+    await flushInk();
+    (stdin as unknown as PassThrough).write("\r");
 
     const answer = await answerPromise;
     assert.equal(answer, "my answer");
@@ -145,7 +182,7 @@ test("tui askHumanInput returns typed answer via readline", async () => {
   }
 });
 
-test("tui done message appears in stdout", () => {
+test("tui done message appears in stdout", async () => {
   const stdin = new FakeTtyInput() as unknown as NodeJS.ReadStream;
   const stdout = new FakeTtyOutput() as unknown as NodeJS.WriteStream & FakeTtyOutput;
   const stderr = new FakeTtyOutput() as unknown as NodeJS.WriteStream;
@@ -158,7 +195,10 @@ test("tui done message appears in stdout", () => {
 
   try {
     surface.done("Task completed successfully");
-    const output = stdout.writes.join("");
+    const output = await waitForOutput(
+      () => stdout.writes.join(""),
+      /Task completed successfully/
+    );
     assert.match(output, /Done/);
     assert.match(output, /Task completed successfully/);
   } finally {

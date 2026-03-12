@@ -1,38 +1,67 @@
 import path from "path";
-import readline from "node:readline";
+import React from "react";
 import { writeDefaultConfig } from "./config";
 import { runOrchestrator } from "./orchestrator";
 import { AgentName, UiMode } from "./types";
+import ReplApp from "./ink/ReplApp";
+import { InkInstance, loadInkRuntime, shouldUseInkDebugMode } from "./ink/runtime";
 
 const pkg = require("../package.json") as { version?: string };
 
-function printHelp(): void {
+function helpText(): string {
   const B = "\x1b[1m";
   const D = "\x1b[2m";
   const R = "\x1b[0m";
-  console.log(`\n  ${B}agent-pipe${R} ${D}(cagp)${R} — AI engineering team orchestrator\n`);
-  console.log(`  ${B}Usage${R}`);
-  console.log(`    agent-pipe init ${D}[options]${R}`);
-  console.log(`    agent-pipe run ${D}"<task>" [options]${R}\n`);
-  console.log(`  ${B}Commands${R}`);
-  console.log(`    ${B}init${R}                        Create a starter .agentpipe.json`);
-  console.log(`    ${B}run${R}                         Execute an orchestration task\n`);
-  console.log(`  ${B}Run options${R}`);
-  console.log(`    --primary-agent <name>     Primary agent ${D}(claude|codex|gemini)${R}`);
-  console.log(`    --discuss                  Enable plan & discuss phase`);
-  console.log(`    --max-hops <number>        Maximum routing hops`);
-  console.log(`    --timeout-ms <number>      Per-agent timeout in milliseconds`);
-  console.log(`    --max-retries <number>     Contract parse retries`);
-  console.log(`    --no-progress-hops <num>   Ask human if repo stalls for N steps`);
-  console.log(`    --ui <mode>                UI mode ${D}(auto|plain|tui)${R}`);
-  console.log(`    --config <path>            Config path ${D}(default: .agentpipe.json)${R}`);
-  console.log(`    --cwd <path>               Working directory ${D}(default: cwd)${R}\n`);
-  console.log(`  ${B}Init options${R}`);
-  console.log(`    --config <path>            Config output path`);
-  console.log(`    --cwd <path>               Target repo directory`);
-  console.log(`    --force                    Overwrite existing config`);
-  console.log(`    -h, --help                 Show help`);
-  console.log(`    -v, --version              Show version\n`);
+
+  return [
+    "",
+    `  ${B}agent-pipe${R} ${D}(cagp)${R} — AI engineering team orchestrator`,
+    "",
+    `  ${B}Usage${R}`,
+    `    agent-pipe init ${D}[options]${R}`,
+    `    agent-pipe run ${D}"<task>" [options]${R}`,
+    "",
+    `  ${B}Commands${R}`,
+    `    ${B}init${R}                        Create a starter .agentpipe.json`,
+    `    ${B}run${R}                         Execute an orchestration task`,
+    "",
+    `  ${B}Run options${R}`,
+    `    --primary-agent <name>     Primary agent ${D}(claude|codex|gemini)${R}`,
+    `    --discuss                  Enable plan & discuss phase`,
+    `    --max-hops <number>        Maximum routing hops`,
+    `    --timeout-ms <number>      Per-agent timeout in milliseconds`,
+    `    --max-retries <number>     Contract parse retries`,
+    `    --no-progress-hops <num>   Ask human if repo stalls for N steps`,
+    `    --ui <mode>                UI mode ${D}(auto|plain|tui)${R}`,
+    `    --config <path>            Config path ${D}(default: .agentpipe.json)${R}`,
+    `    --cwd <path>               Working directory ${D}(default: cwd)${R}`,
+    "",
+    `  ${B}Init options${R}`,
+    `    --config <path>            Config output path`,
+    `    --cwd <path>               Target repo directory`,
+    `    --force                    Overwrite existing config`,
+    `    -h, --help                 Show help`,
+    `    -v, --version              Show version`,
+    "",
+  ].join("\n");
+}
+
+function printHelp(): void {
+  console.log(helpText());
+}
+
+function replBannerText(version: string): string {
+  const B = "\x1b[1m";
+  const D = "\x1b[2m";
+  const R = "\x1b[0m";
+
+  return [
+    "",
+    `  ${B}agent-pipe${R} ${D}v${version}${R} — interactive mode`,
+    `  ${D}Type a task (with optional flags) or a command.${R}`,
+    `  ${D}Commands: /help, /quit${R}`,
+    "",
+  ].join("\n");
 }
 
 function parseRunArgs(args: string[]): {
@@ -175,147 +204,147 @@ function parseInitArgs(args: string[]): {
   return parsed;
 }
 
-async function runRepl(): Promise<void> {
-  const B = "\x1b[1m";
-  const D = "\x1b[2m";
-  const R = "\x1b[0m";
-  console.log(`\n  ${B}agent-pipe${R} ${D}v${pkg.version || "0.0.0"}${R} — interactive mode`);
-  console.log(`  ${D}Type a task (with optional flags) or a command.${R}`);
-  console.log(`  ${D}Commands: /help, /quit${R}\n`);
+function validateParsedRunArgs(parsed: ReturnType<typeof parseRunArgs>): string | null {
+  if (parsed.maxHops !== null && (!Number.isInteger(parsed.maxHops) || parsed.maxHops <= 0)) {
+    return "--max-hops must be a positive integer";
+  }
 
-  // Bracketed paste: the terminal wraps pasted text in ESC[200~ ... ESC[201~
-  // We enable this so multi-line pastes are collected into one input rather
-  // than having readline submit at the first \n and leaking the rest to zsh.
-  const PASTE_START = "\x1b[200~";
-  const PASTE_END = "\x1b[201~";
-  const ENABLE_BRACKETED_PASTE = "\x1b[?2004h";
-  const DISABLE_BRACKETED_PASTE = "\x1b[?2004l";
+  if (parsed.timeoutMs !== null && (!Number.isInteger(parsed.timeoutMs) || parsed.timeoutMs <= 0)) {
+    return "--timeout-ms must be a positive integer";
+  }
 
-  const prompt = (): Promise<string | null> => {
-    return new Promise((resolve) => {
-      process.stdout.write(ENABLE_BRACKETED_PASTE);
+  if (parsed.maxRetries !== null && (!Number.isInteger(parsed.maxRetries) || parsed.maxRetries < 0)) {
+    return "--max-retries must be a non-negative integer";
+  }
 
-      if (!process.stdin.isTTY || typeof process.stdin.setRawMode !== "function") {
-        // Non-TTY fallback: simple readline
-        const rl = readline.createInterface({
-          input: process.stdin,
-          output: process.stdout,
-        });
-        let answered = false;
-        rl.on("close", () => {
-          if (!answered) resolve(null);
-        });
-        rl.question("> ", (answer: string) => {
-          answered = true;
-          rl.close();
-          resolve(answer);
-        });
+  if (
+    parsed.noProgressHops !== null &&
+    (!Number.isInteger(parsed.noProgressHops) || parsed.noProgressHops < 0)
+  ) {
+    return "--no-progress-hops must be a non-negative integer";
+  }
+
+  if (parsed.primaryAgent !== null) {
+    const allowed = new Set<AgentName>(["claude", "codex", "gemini"]);
+    if (!allowed.has(parsed.primaryAgent)) {
+      return "--primary-agent must be one of: claude, codex, gemini";
+    }
+  }
+
+  if (
+    parsed.uiMode !== null &&
+    parsed.uiMode !== "auto" &&
+    parsed.uiMode !== "plain" &&
+    parsed.uiMode !== "tui"
+  ) {
+    return "--ui must be one of: auto, plain, tui";
+  }
+
+  return null;
+}
+
+function tokenizeReplInput(input: string): string[] {
+  return (input.match(/(?:[^\s"]+|"[^"]*")+/g) || []).map((token) =>
+    token.replace(/^"|"$/g, "")
+  );
+}
+
+async function runParsedTask(parsed: ReturnType<typeof parseRunArgs>, task: string): Promise<void> {
+  const result = await runOrchestrator({
+    task,
+    primaryAgent: parsed.primaryAgent,
+    discuss: parsed.discuss || null,
+    maxHops: parsed.maxHops,
+    timeoutMs: parsed.timeoutMs,
+    maxInvalidContractRetries: parsed.maxRetries,
+    noProgressHops: parsed.noProgressHops,
+    uiMode: parsed.uiMode,
+    configPath: parsed.configPath,
+    cwd: parsed.cwd,
+  });
+
+  if (result && result.status) {
+    console.log(
+      `[agent-pipe] status=${result.status} hops=${result.hops}${
+        result.logPath ? ` log=${result.logPath}` : ""
+      }`
+    );
+  }
+}
+
+async function promptReplCommand(noticeText: string | null): Promise<string | null> {
+  const runtime = await loadInkRuntime();
+  const debug = shouldUseInkDebugMode(process.stdout);
+
+  return new Promise((resolve) => {
+    let instance: InkInstance | null = null;
+    let closed = false;
+
+    const handleEnd = (): void => {
+      close(null);
+    };
+
+    const close = (value: string | null, remainder?: string): void => {
+      if (closed) {
         return;
       }
 
-      process.stdout.write("> ");
-      process.stdin.setRawMode(true);
-      process.stdin.resume();
+      closed = true;
+      process.stdin.off("end", handleEnd);
+      process.stdin.off("close", handleEnd);
 
-      let buf = "";
-      let pasting = false;
+      if (instance) {
+        instance.unmount();
+        instance.cleanup();
+        instance = null;
+      }
 
-      const cleanup = () => {
-        process.stdin.setRawMode(false);
-        process.stdin.pause();
-        process.stdin.removeListener("data", onData);
-        process.stdout.write(DISABLE_BRACKETED_PASTE);
-      };
+      if (remainder && remainder !== "") {
+        process.stdin.unshift(Buffer.from(remainder));
+      }
 
-      const submit = (value: string | null) => {
-        cleanup();
-        if (value !== null) {
-          process.stdout.write("\n");
-        }
-        resolve(value);
-      };
+      resolve(value);
+    };
 
-      const onData = (data: Buffer) => {
-        const str = data.toString("utf8");
+    process.stdin.once("end", handleEnd);
+    process.stdin.once("close", handleEnd);
 
-        // Check for paste boundaries anywhere in the chunk
-        if (str.includes(PASTE_START)) {
-          pasting = true;
-          // Strip the escape and collect the content
-          buf += str.replace(PASTE_START, "").replace(PASTE_END, "");
-          if (str.includes(PASTE_END)) {
-            pasting = false;
-          }
-          return;
-        }
+    instance = runtime.render(
+      React.createElement(ReplApp, {
+        ui: runtime,
+        bannerText: replBannerText(pkg.version || "0.0.0"),
+        noticeText,
+        onSubmit: (value: string, remainder?: string) => close(value, remainder),
+        onExit: () => close(null),
+      }),
+      {
+        stdin: process.stdin,
+        stdout: process.stdout,
+        stderr: process.stderr,
+        debug,
+        exitOnCtrlC: false,
+        patchConsole: false,
+        maxFps: 60,
+        incrementalRendering: !debug,
+      }
+    );
+  });
+}
 
-        if (pasting) {
-          if (str.includes(PASTE_END)) {
-            buf += str.replace(PASTE_END, "");
-            pasting = false;
-          } else {
-            buf += str;
-          }
-          return;
-        }
-
-        for (const ch of str) {
-          const code = ch.charCodeAt(0);
-
-          // Ctrl+D on empty line → EOF
-          if (code === 4) {
-            submit(null);
-            return;
-          }
-
-          // Ctrl+C → cancel current line
-          if (code === 3) {
-            process.stdout.write("^C\n");
-            buf = "";
-            process.stdout.write("> ");
-            continue;
-          }
-
-          // Enter → submit
-          if (ch === "\r" || ch === "\n") {
-            submit(buf);
-            return;
-          }
-
-          // Backspace / DEL
-          if (code === 127 || code === 8) {
-            if (buf.length > 0) {
-              buf = buf.slice(0, -1);
-              process.stdout.write("\b \b");
-            }
-            continue;
-          }
-
-          // Ignore other control chars
-          if (code < 32) {
-            continue;
-          }
-
-          buf += ch;
-          process.stdout.write(ch);
-        }
-      };
-
-      process.stdin.on("data", onData);
-    });
-  };
+async function runRepl(): Promise<void> {
+  let noticeText: string | null = null;
 
   while (true) {
-    const input = await prompt();
+    const input = await promptReplCommand(noticeText);
 
     if (input === null) {
-      // Ctrl+D / EOF
-      console.log("\nBye!");
+      console.log("Bye!");
       return;
     }
 
     const trimmed = input.trim();
     if (trimmed === "") {
+      noticeText = null;
       continue;
     }
 
@@ -325,86 +354,32 @@ async function runRepl(): Promise<void> {
     }
 
     if (trimmed === "/help") {
-      printHelp();
+      noticeText = helpText();
       continue;
     }
 
-    // Parse the input as run args — supports all flags inline
-    const tokens = trimmed.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
-    const parsed = parseRunArgs(tokens.map((t) => t.replace(/^"|"$/g, "")));
+    const parsed = parseRunArgs(tokenizeReplInput(trimmed));
     const task = parsed.taskParts.join(" ").trim();
     if (!task) {
-      console.error('No task provided. Example: add JWT refresh token support');
+      noticeText = 'No task provided. Example: add JWT refresh token support';
       continue;
     }
 
-    if (parsed.maxHops !== null && (!Number.isInteger(parsed.maxHops) || parsed.maxHops <= 0)) {
-      console.error("--max-hops must be a positive integer");
+    const validationError = validateParsedRunArgs(parsed);
+    if (validationError) {
+      noticeText = validationError;
       continue;
     }
 
-    if (parsed.timeoutMs !== null && (!Number.isInteger(parsed.timeoutMs) || parsed.timeoutMs <= 0)) {
-      console.error("--timeout-ms must be a positive integer");
-      continue;
-    }
-
-    if (parsed.maxRetries !== null && (!Number.isInteger(parsed.maxRetries) || parsed.maxRetries < 0)) {
-      console.error("--max-retries must be a non-negative integer");
-      continue;
-    }
-
-    if (
-      parsed.noProgressHops !== null &&
-      (!Number.isInteger(parsed.noProgressHops) || parsed.noProgressHops < 0)
-    ) {
-      console.error("--no-progress-hops must be a non-negative integer");
-      continue;
-    }
-
-    if (parsed.primaryAgent !== null) {
-      const allowed = new Set<AgentName>(["claude", "codex", "gemini"]);
-      if (!allowed.has(parsed.primaryAgent)) {
-        console.error("--primary-agent must be one of: claude, codex, gemini");
-        continue;
-      }
-    }
-
-    if (
-      parsed.uiMode !== null &&
-      parsed.uiMode !== "auto" &&
-      parsed.uiMode !== "plain" &&
-      parsed.uiMode !== "tui"
-    ) {
-      console.error("--ui must be one of: auto, plain, tui");
-      continue;
-    }
+    noticeText = null;
 
     try {
-      const result = await runOrchestrator({
-        task,
-        primaryAgent: parsed.primaryAgent,
-        discuss: parsed.discuss || null,
-        maxHops: parsed.maxHops,
-        timeoutMs: parsed.timeoutMs,
-        maxInvalidContractRetries: parsed.maxRetries,
-        noProgressHops: parsed.noProgressHops,
-        uiMode: parsed.uiMode,
-        configPath: parsed.configPath,
-        cwd: parsed.cwd,
-      });
-
-      if (result && result.status) {
-        console.log(
-          `[agent-pipe] status=${result.status} hops=${result.hops}${
-            result.logPath ? ` log=${result.logPath}` : ""
-          }`
-        );
-      }
+      await runParsedTask(parsed, task);
     } catch (error) {
       console.error(`Error: ${(error as Error).message}`);
     }
 
-    console.log(""); // blank line between runs
+    console.log("");
   }
 }
 
@@ -427,6 +402,7 @@ export async function main(argv = process.argv): Promise<void> {
       await runRepl();
       return;
     }
+
     printHelp();
     process.exit(0);
   }
@@ -465,67 +441,13 @@ export async function main(argv = process.argv): Promise<void> {
     process.exit(1);
   }
 
-  if (parsed.maxHops !== null && (!Number.isInteger(parsed.maxHops) || parsed.maxHops <= 0)) {
-    console.error("--max-hops must be a positive integer");
+  const validationError = validateParsedRunArgs(parsed);
+  if (validationError) {
+    console.error(validationError);
     process.exit(1);
   }
 
-  if (parsed.timeoutMs !== null && (!Number.isInteger(parsed.timeoutMs) || parsed.timeoutMs <= 0)) {
-    console.error("--timeout-ms must be a positive integer");
-    process.exit(1);
-  }
-
-  if (parsed.maxRetries !== null && (!Number.isInteger(parsed.maxRetries) || parsed.maxRetries < 0)) {
-    console.error("--max-retries must be a non-negative integer");
-    process.exit(1);
-  }
-
-  if (
-    parsed.noProgressHops !== null &&
-    (!Number.isInteger(parsed.noProgressHops) || parsed.noProgressHops < 0)
-  ) {
-    console.error("--no-progress-hops must be a non-negative integer");
-    process.exit(1);
-  }
-
-  if (parsed.primaryAgent !== null) {
-    const allowed = new Set<AgentName>(["claude", "codex", "gemini"]);
-    if (!allowed.has(parsed.primaryAgent)) {
-      console.error("--primary-agent must be one of: claude, codex, gemini");
-      process.exit(1);
-    }
-  }
-
-  if (
-    parsed.uiMode !== null &&
-    parsed.uiMode !== "auto" &&
-    parsed.uiMode !== "plain" &&
-    parsed.uiMode !== "tui"
-  ) {
-    console.error("--ui must be one of: auto, plain, tui");
-    process.exit(1);
-  }
-
-  const result = await runOrchestrator({
-    task,
-    primaryAgent: parsed.primaryAgent,
-    discuss: parsed.discuss || null,
-    maxHops: parsed.maxHops,
-    timeoutMs: parsed.timeoutMs,
-    maxInvalidContractRetries: parsed.maxRetries,
-    noProgressHops: parsed.noProgressHops,
-    uiMode: parsed.uiMode,
-    configPath: parsed.configPath,
-    cwd: parsed.cwd,
-  });
-
-  if (result && result.status) {
-    console.log(
-      `[agent-pipe] status=${result.status} hops=${result.hops}${
-        result.logPath ? ` log=${result.logPath}` : ""
-      }`
-    );
-  }
+  await runParsedTask(parsed, task);
 }
 
 if (require.main === module) {

@@ -21,6 +21,10 @@ function runCli(args: string[]) {
   return spawnSync(process.execPath, ["--import", "tsx", CLI_ENTRY, ...args], {
     cwd: PROJECT_ROOT,
     encoding: "utf8",
+    env: {
+      ...process.env,
+      AGENT_PIPE_INK_DEBUG: "1",
+    },
   });
 }
 
@@ -29,6 +33,11 @@ function runInteractiveCli(input: string) {
   const script = `
 Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
 Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+process.stdin.setRawMode = () => process.stdin;
+process.stdin.ref = () => process.stdin;
+process.stdin.unref = () => process.stdin;
+process.stdout.columns = 100;
+process.stdout.rows = 32;
 const cliModule = await import(${JSON.stringify(entryUrl)});
 await cliModule.default.main(["node", "agent-pipe"]);
 `;
@@ -37,6 +46,10 @@ await cliModule.default.main(["node", "agent-pipe"]);
     cwd: PROJECT_ROOT,
     encoding: "utf8",
     input,
+    env: {
+      ...process.env,
+      AGENT_PIPE_INK_DEBUG: "1",
+    },
   });
 }
 

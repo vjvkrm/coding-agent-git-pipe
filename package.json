@@ -30,7 +30,7 @@
     "iterative-review"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "files": [
     "bin/",
@@ -55,7 +55,13 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@types/react": "^19.2.14",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "ink": "^6.8.0",
+    "ink-text-input": "^6.0.0",
+    "react": "^19.2.4"
   }
 }
