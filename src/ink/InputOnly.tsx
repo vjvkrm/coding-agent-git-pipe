@@ -1,5 +1,6 @@
 import React from "react";
 import type { InkKeyLike, InkRuntime } from "./runtime";
+import SingleLineTextBox from "./SingleLineTextBox";
 
 interface InputOnlyProps {
   readonly ui: Pick<InkRuntime, "Box" | "Text" | "TextInput" | "useInput">;
@@ -23,16 +24,10 @@ export default function InputOnly({
   });
 
   return (
-    <Box
-      borderStyle="round"
-      borderColor="cyan"
-      paddingLeft={1}
-      paddingRight={1}
-    >
-      <Text>{promptText}</Text>
-      <TextInput
-        focus
-        showCursor
+    <Box flexDirection="column">
+      <SingleLineTextBox
+        ui={{ Box, Text, TextInput }}
+        prefixText={promptText}
         value={value}
         onChange={setValue}
         onSubmit={(answer: string) => {

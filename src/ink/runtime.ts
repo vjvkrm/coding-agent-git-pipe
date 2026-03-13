@@ -17,6 +17,7 @@ export interface InkTextInputProps {
   readonly focus?: boolean;
   readonly placeholder?: string;
   readonly showCursor?: boolean;
+  readonly highlightPastedText?: boolean;
 }
 
 export interface InkStaticProps {

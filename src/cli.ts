@@ -284,7 +284,7 @@ async function promptReplCommand(noticeText: string | null): Promise<string | nu
       close(null);
     };
 
-    const close = (value: string | null, remainder?: string): void => {
+    const close = (value: string | null): void => {
       if (closed) {
         return;
       }
@@ -299,10 +299,6 @@ async function promptReplCommand(noticeText: string | null): Promise<string | nu
         instance = null;
       }
 
-      if (remainder && remainder !== "") {
-        process.stdin.unshift(Buffer.from(remainder));
-      }
-
       resolve(value);
     };
 
@@ -314,7 +310,7 @@ async function promptReplCommand(noticeText: string | null): Promise<string | nu
         ui: runtime,
         bannerText: replBannerText(pkg.version || "0.0.0"),
         noticeText,
-        onSubmit: (value: string, remainder?: string) => close(value, remainder),
+        onSubmit: (value: string) => close(value),
         onExit: () => close(null),
       }),
       {

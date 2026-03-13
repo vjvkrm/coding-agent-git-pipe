@@ -182,6 +182,45 @@ test("tui askHumanInput returns typed answer via Ink input", async () => {
   }
 });
 
+test("tui askHumanInput keeps multiline paste in the field until Enter is pressed", async () => {
+  const stdin = new FakeTtyInput() as unknown as NodeJS.ReadStream;
+  const stdout = new FakeTtyOutput() as unknown as NodeJS.WriteStream & FakeTtyOutput;
+  const stderr = new FakeTtyOutput() as unknown as NodeJS.WriteStream;
+  const surface = createRunSurface({
+    mode: "tui",
+    stdin,
+    stdout,
+    stderr,
+  });
+
+  try {
+    const answerPromise = surface.askHumanInput(
+      {
+        message: "Need input",
+        questions: [{ id: "q1", text: "What changed?" }],
+        footer: "",
+      },
+      async () => ""
+    );
+
+    await waitForOutput(() => stdout.writes.join(""), /Reply/, 5000);
+    (stdin as unknown as PassThrough).write("first line\nsecond line");
+
+    const promptOutput = await waitForOutput(
+      () => stdout.writes.join(""),
+      /first line second line/,
+      5000
+    );
+    assert.match(promptOutput, /first line second line/);
+
+    (stdin as unknown as PassThrough).write("\r");
+    const answer = await answerPromise;
+    assert.equal(answer, "first line second line");
+  } finally {
+    surface.stop();
+  }
+});
+
 test("tui done message appears in stdout", async () => {
   const stdin = new FakeTtyInput() as unknown as NodeJS.ReadStream;
   const stdout = new FakeTtyOutput() as unknown as NodeJS.WriteStream & FakeTtyOutput;

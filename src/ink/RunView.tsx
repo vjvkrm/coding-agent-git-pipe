@@ -28,17 +28,21 @@ export default function RunView({
       {state.liveOutput !== "" ? <Text>{state.liveOutput}</Text> : null}
 
       {state.inputRequest ? (
-        <HumanInput
-          key={state.inputRequest.id}
-          ui={ui}
-          requestId={state.inputRequest.id}
-          promptText={state.inputRequest.promptText}
-          onSubmit={onSubmitHumanInput}
-        />
+        <Box flexDirection="column" marginTop={1}>
+          <HumanInput
+            key={state.inputRequest.id}
+            ui={ui}
+            requestId={state.inputRequest.id}
+            promptText={state.inputRequest.promptText}
+            onSubmit={onSubmitHumanInput}
+          />
+        </Box>
       ) : null}
 
       {!state.inputRequest && state.spinnerFrame ? (
-        <Spinner ui={ui} frame={state.spinnerFrame} />
+        <Box marginTop={1}>
+          <Spinner ui={ui} frame={state.spinnerFrame} />
+        </Box>
       ) : null}
     </Box>
   );
