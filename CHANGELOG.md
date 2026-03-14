@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.2.0 - 2026-03-14
+
+### Added
+- **Interactive REPL mode**: Running `agent-pipe` with no arguments in a TTY now launches an interactive prompt powered by Ink. Type tasks with any `run` flags inline and press Enter; the orchestrator runs and the prompt returns. Commands: `/help`, `/quit` (also `/exit`, `/q`), Ctrl+D.
+- **TUI rendering mode** (`--ui tui|plain|auto`): New `--ui` CLI flag and `uiMode` field in `RunInput`. `auto` (default) uses Ink when both stdin and stdout are a TTY, otherwise falls back to plain text. The TUI surface renders live agent output, compact contract briefs (routing action + review verdict icon + message snippet), and a styled Ink human-input prompt.
+- **`uiMode` in `RunInput`**: Programmatic callers can now pass `uiMode: "plain"` to suppress Ink rendering when embedding the orchestrator in their own tooling.
+- **`discussion` block in default init config**: `agent-pipe init` now writes the full `discussion` object to `.agentpipe.json` with `enabled: false` and all fields visible, so users can enable discuss mode without looking up docs.
+- **CLI input validation**: All `run` flags (`--max-hops`, `--timeout-ms`, `--max-retries`, `--no-progress-hops`, `--primary-agent`, `--ui`) are now validated before the orchestrator starts; errors are reported immediately with a clear message.
+- **New Ink components**: `src/ink/` directory with `ReplApp`, `InputOnly`, `RunView`, `AgentOutput`, `HumanInput`, `SingleLineTextBox`, `Spinner`, and `normalizeSingleLineInput`.
+- **New tests**: `tests/run-ui.test.ts` (surface rendering, contract extraction, UI mode resolution), `tests/ink-single-line-text-box.test.ts` (component tests), `tests/cli.test.ts` (argument parsing, REPL tokenizer, validation).
+
+### Changed
+- `printHelp` now returns a string via `helpText()` so it can be shown inline in REPL mode via `/help`.
+- Running `agent-pipe` with no arguments in a non-TTY (pipe, CI) still prints help and exits — no change to scripted usage.
+
 ## 1.1.0 - 2026-03-11
 
 ### Added

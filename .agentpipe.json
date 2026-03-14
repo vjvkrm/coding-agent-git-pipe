@@ -21,5 +21,11 @@
     "review": [],
     "pair": []
   },
-  "review_gate": true
+  "review_gate": true,
+  "discussion": {
+    "enabled": false,
+    "participants": [],
+    "max_rounds": 3,
+    "require_consensus": true
+  }
 }

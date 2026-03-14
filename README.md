@@ -128,6 +128,7 @@ Contributions are welcome.
 - [Installation](#installation)
 - [Usage](#usage)
   - [CLI Commands](#cli-commands)
+  - [Interactive REPL Mode](#interactive-repl-mode)
   - [CLI Flags](#cli-flags)
   - [Using With Fewer Agents](#using-with-fewer-agents)
 - [How It Works](#how-it-works)
@@ -172,6 +173,9 @@ agent-pipe run "add dark mode support"
 
 # Enable team discussion before implementation
 agent-pipe run "refactor auth module" --discuss
+
+# Interactive REPL mode — just run agent-pipe with no arguments in a terminal
+agent-pipe
 ```
 
 `agent-pipe init` writes a starter routing config. The shipped defaults are `primary=codex`, `review=gemini`, and `pair=claude`, but you should change those to match the CLIs you actually have installed and want to use.
@@ -233,7 +237,7 @@ agent-pipe --help
 
 ### CLI Commands
 
-Use `init` once per repo to create a starter config, then use `run` for actual tasks.
+Use `init` once per repo to create a starter config, then use `run` for actual tasks — or drop into interactive REPL mode.
 
 ```bash
 # Create .agentpipe.json in the current repo
@@ -254,7 +258,7 @@ After `init`, edit `.agentpipe.json` and choose your routing explicitly:
 
 The generated defaults are only a starter template. They are not a requirement, and they are not the right choice for every machine.
 
-Then pass your task as a quoted string:
+Then pass your task as a quoted string, or start interactive mode:
 
 ```bash
 # Basic usage
@@ -262,7 +266,17 @@ agent-pipe run "add JWT refresh token support"
 
 # Shorthand alias works too
 agent-pipe run "add user authentication with OAuth2"
+
+# Interactive REPL mode — run tasks interactively without re-typing agent-pipe each time
+# (Launches automatically when run with no arguments in a terminal)
+agent-pipe
+# > add JWT refresh token support --discuss
+# > fix login bug --primary-agent claude
+# > /help
+# > /quit
 ```
+
+In REPL mode you type a task (with optional flags) and press Enter. The orchestrator runs, then the prompt returns. Use `/help` to show usage, `/quit` (or `/exit`, `/q`, Ctrl+D) to exit.
 
 The orchestrator will:
 
@@ -282,11 +296,20 @@ The orchestrator will:
 | `--timeout-ms <n>`       | `1800000`         | Per-agent timeout in milliseconds (default: 30 min)                    |
 | `--max-retries <n>`      | `1`               | Contract parse retries before escalating to human                      |
 | `--no-progress-hops <n>` | `3`               | Ask human if repo unchanged for N consecutive steps (0 = disabled)     |
+| `--ui <mode>`            | `auto`            | UI rendering mode: `auto` (detect TTY), `plain` (text), `tui` (Ink)   |
 | `--config <path>`        | `.agentpipe.json` | Path to config JSON file                                               |
 | `--cwd <path>`           | Current dir       | Working directory (must be a git repo)                                 |
 | `--force`                |                   | `init` only. Overwrite an existing config file                         |
 | `-v, --version`          |                   | Show version                                                           |
 | `-h, --help`             |                   | Show help                                                              |
+
+**`--ui` modes:**
+
+| Mode    | Behavior                                                                           |
+| ------- | ---------------------------------------------------------------------------------- |
+| `auto`  | Default. Uses `tui` when both stdin and stdout are a TTY; falls back to `plain`    |
+| `plain` | Plain text output — prefixed lines, no Ink rendering. Best for scripts and CI     |
+| `tui`   | Ink-based terminal UI with live rendering, contract briefs, and styled human input |
 
 ### Examples
 
@@ -309,6 +332,31 @@ agent-pipe run "analyze codebase architecture" --no-progress-hops 0
 # Use a custom config file and different working directory
 agent-pipe run "fix login bug" --config ./my-config.json --cwd /path/to/repo
 ```
+
+### Interactive REPL Mode
+
+Running `agent-pipe` with no arguments in an interactive terminal launches REPL mode:
+
+```
+$ agent-pipe
+
+  agent-pipe v1.2.0 — interactive mode
+  Type a task (with optional flags) or a command.
+  Commands: /help, /quit
+
+> add JWT refresh token support --discuss
+> fix login bug --primary-agent claude --max-hops 5
+> /help
+> /quit
+```
+
+- Type a task with any `run` flags inline and press Enter to start an orchestration run.
+- After the run completes the prompt returns — you can immediately type the next task.
+- `/help` — show usage text inline.
+- `/quit`, `/exit`, `/q` — exit REPL mode.
+- `Ctrl+D` — exit REPL mode.
+
+REPL mode does not launch in non-TTY environments (pipes, CI). Running `agent-pipe` with no arguments in a pipe prints the help text and exits.
 
 ### Using With Fewer Agents
 
@@ -869,29 +917,44 @@ Uses Node.js built-in test runner with `tsx` for TypeScript support. Tests use r
 ```
 bin/cli.js              CLI entry point (loads built dist)
 src/
-  cli.ts                Argument parsing and validation
-  types.ts              All TypeScript interfaces (Contract v2, DiscussionConfig, etc.)
+  cli.ts                Argument parsing, validation, REPL loop, and main entry
+  types.ts              All TypeScript interfaces (Contract v2, DiscussionConfig, UiMode, etc.)
   config.ts             Config loader with defaults and validation
   contract.ts           Contract schema validation (v1 core + v2 optional fields)
   parser.ts             JSON contract extraction from agent output
   router.ts             Action-to-agent routing
   orchestrator.ts       Main run loop (phases, review iteration)
   discussion.ts         Plan & discuss engine (proposal, consensus, revision)
-  human-gate.ts         Interactive human input via readline
+  run-ui.ts             RunSurface abstraction — plain and TUI rendering surfaces
+  human-gate.ts         Readline-based human input fallback
   runtime.ts            Lock file, JSONL logger, timeout resolution
   git-state.ts          Git repo state detection (HEAD + status)
+  ui.ts                 Shared UI string formatters (banners, notes, prefixes)
   adapters/
     index.ts            Agent dispatcher
     base.ts             Spawn + capture logic, mode-based command resolution
     claude.ts           Claude Code adapter (stream-json parsing)
     codex.ts            Codex adapter (JSON line parsing)
     gemini.ts           Gemini adapter (stream-json delta parsing)
+  ink/
+    runtime.ts          Ink runtime loader (lazy import, TTY detection)
+    App.tsx             Top-level Ink application shell
+    ReplApp.tsx         REPL mode prompt component
+    InputOnly.tsx       Minimal human-input component (used during askHumanInput)
+    RunView.tsx         Live run output view
+    AgentOutput.tsx     Streaming agent output display
+    HumanInput.tsx      Human input form with heading/footer
+    SingleLineTextBox.tsx  Single-line input with prefix
+    Spinner.tsx         Spinner indicator
+    normalizeSingleLineInput.ts  Input normalization helper
 tests/
   contract.test.ts      Contract validation tests (v1 + v2 fields)
   parser.test.ts        Parser extraction tests
   orchestrator.test.ts  End-to-end orchestrator tests (incl. review iteration, discussion)
   discussion.test.ts    Discussion engine tests (consensus, revision, deadlock)
-  orchestrator-output.test.ts  Output formatting tests
+  run-ui.test.ts        RunSurface and output extraction tests
+  ink-single-line-text-box.test.ts  SingleLineTextBox component tests
+  cli.test.ts           CLI argument parsing, REPL tokenizer, and validation tests
   adapter-base.test.ts  Base adapter tests
   claude-adapter.test.ts
   codex-adapter.test.ts

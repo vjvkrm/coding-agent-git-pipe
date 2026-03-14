@@ -98,6 +98,7 @@ interface RunInput {
   timeoutMs?: number | null;                 // Override per-agent timeout (default: config)
   maxInvalidContractRetries?: number | null;  // Override retry count (default: config)
   noProgressHops?: number | null;            // Override no-progress guard (default: config)
+  uiMode?: UiMode | null;                    // UI rendering mode (default: auto-detect)
   configPath?: string | null;                // Path to config file
   cwd?: string;                              // Working directory (default: process.cwd())
   runtime?: {
@@ -107,6 +108,20 @@ interface RunInput {
   };
 }
 ```
+
+**`uiMode`** controls how output is rendered during the run.
+
+```typescript
+type UiMode = "auto" | "plain" | "tui";
+```
+
+| Value   | Behavior |
+|---------|----------|
+| `"auto"` | Default. Uses `"tui"` when both stdin and stdout are a TTY; falls back to `"plain"` |
+| `"plain"` | Plain-text output with `[agent][scope]` prefix lines. Suitable for CI and scripts |
+| `"tui"` | Ink-based terminal UI with live rendering, compact contract briefs (action + message snippet + review verdict icon), and a styled human input prompt |
+
+When embedding `runOrchestrator` in your own tool and supplying a custom `runtime.askHumanInput`, you can set `uiMode: "plain"` to avoid Ink taking over the terminal.
 
 **`runtime.invokeAgent`** — Replace the default adapter system. Receives agent name, prompt, and options. Must return an `AdapterInvocation` with captured stdout/stderr.
 
@@ -782,6 +797,9 @@ type TargetName = AgentName | "human" | "stop";
 // Actions that appear in contracts (agent-facing)
 type NextAction = "primary" | "review" | "pair" | "ask-human" | "done";
 
+// UI rendering mode
+type UiMode = "auto" | "plain" | "tui";
+
 // Discussion sentiment
 type Sentiment = "agree" | "disagree" | "partial" | "neutral";
 
@@ -919,3 +937,6 @@ Current test files:
 | `tests/parser.test.ts` | Fenced JSON extraction, raw JSON, missing block |
 | `tests/orchestrator.test.ts` | Full loop (`primary -> review -> done`), ask-human pause/resume, retry on invalid contract, max_hops termination, no-progress guard, pair routing with auto-return, review iteration (request-changes → fix → re-review → approve), discussion integration |
 | `tests/discussion.test.ts` | Consensus, revision on disagreement, deadlock with human escalation, partial consensus, no-participant skip, participant inference |
+| `tests/run-ui.test.ts` | `PlainRunSurface` and `TuiRunSurface` output, `extractVisibleAgentText` (contract stripping), `resolveUiMode` TTY detection |
+| `tests/ink-single-line-text-box.test.ts` | `SingleLineTextBox` rendering and input handling |
+| `tests/cli.test.ts` | Argument parsing, REPL input tokenizer, flag validation, init/run command dispatch |
