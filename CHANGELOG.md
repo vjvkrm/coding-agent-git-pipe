@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.2.1 - 2026-03-16
+
+### Fixed
+- **REPL input rendering**: Replaced the Ink-based REPL prompt with Node's built-in `readline`. The previous Ink + `ink-text-input` implementation was rendering each keystroke on a new line in VS Code and other terminals due to unreliable TTY/cursor-control detection in Ink 6. The REPL now uses `readline` for the prompt — copy-paste, arrow keys, and backspace all work correctly. The banner, `/help`, `/quit`, Ctrl+D, and inline flags are unchanged.
+
 ## 1.2.0 - 2026-03-14
 
 ### Added
