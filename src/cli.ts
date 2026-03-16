@@ -1,10 +1,8 @@
 import path from "path";
-import React from "react";
+import readline from "readline";
 import { writeDefaultConfig } from "./config";
 import { runOrchestrator } from "./orchestrator";
 import { AgentName, UiMode } from "./types";
-import ReplApp from "./ink/ReplApp";
-import { InkInstance, loadInkRuntime, shouldUseInkDebugMode } from "./ink/runtime";
 
 const pkg = require("../package.json") as { version?: string };
 
@@ -273,61 +271,33 @@ async function runParsedTask(parsed: ReturnType<typeof parseRunArgs>, task: stri
 }
 
 async function promptReplCommand(noticeText: string | null): Promise<string | null> {
-  const runtime = await loadInkRuntime();
-  const debug = shouldUseInkDebugMode(process.stdout);
+  if (noticeText !== null) {
+    console.log(noticeText);
+  }
 
   return new Promise((resolve) => {
-    let instance: InkInstance | null = null;
-    let closed = false;
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      terminal: true,
+    });
 
-    const handleEnd = (): void => {
-      close(null);
-    };
+    rl.once("close", () => resolve(null));
+    rl.once("SIGINT", () => {
+      rl.close();
+      resolve(null);
+    });
 
-    const close = (value: string | null): void => {
-      if (closed) {
-        return;
-      }
-
-      closed = true;
-      process.stdin.off("end", handleEnd);
-      process.stdin.off("close", handleEnd);
-
-      if (instance) {
-        instance.unmount();
-        instance.cleanup();
-        instance = null;
-      }
-
-      resolve(value);
-    };
-
-    process.stdin.once("end", handleEnd);
-    process.stdin.once("close", handleEnd);
-
-    instance = runtime.render(
-      React.createElement(ReplApp, {
-        ui: runtime,
-        bannerText: replBannerText(pkg.version || "0.0.0"),
-        noticeText,
-        onSubmit: (value: string) => close(value),
-        onExit: () => close(null),
-      }),
-      {
-        stdin: process.stdin,
-        stdout: process.stdout,
-        stderr: process.stderr,
-        debug,
-        exitOnCtrlC: false,
-        patchConsole: false,
-        maxFps: 60,
-        incrementalRendering: !debug,
-      }
-    );
+    rl.question("> ", (answer) => {
+      rl.removeAllListeners();
+      rl.close();
+      resolve(answer);
+    });
   });
 }
 
 async function runRepl(): Promise<void> {
+  console.log(replBannerText(pkg.version || "0.0.0"));
   let noticeText: string | null = null;
 
   while (true) {

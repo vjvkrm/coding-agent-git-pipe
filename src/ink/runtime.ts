@@ -52,7 +52,7 @@ export function shouldUseInkDebugMode(stdout: NodeJS.WriteStream): boolean {
     return true;
   }
 
-  return typeof (stdout as { fd?: unknown }).fd !== "number";
+  return !stdout.isTTY;
 }
 
 export async function loadInkRuntime(): Promise<InkRuntime> {
