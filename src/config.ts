@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { AgentName, Config, DiscussionConfig, NextAction, StepPromptScope, TargetName } from "./types";
+import { AgentName, BrainstormConfig, Config, DiscussionConfig, NextAction, StepPromptScope, TargetName } from "./types";
 
 const ALLOWED_TARGETS = new Set<TargetName>(["claude", "codex", "gemini", "human", "stop"]);
 const ALLOWED_ACTIONS = new Set<NextAction>(["primary", "review", "pair", "ask-human", "done"]);
@@ -9,9 +9,9 @@ const ALLOWED_STEP_PROMPT_SCOPES = new Set<StepPromptScope>(["primary", "review"
 
 export const DEFAULT_CONFIG: Config = {
   routing: {
-    primary: "codex",
-    review: "gemini",
-    pair: "claude",
+    primary: "claude",
+    review: "codex",
+    pair: "gemini",
     "ask-human": "human",
     done: "stop",
   },
@@ -36,6 +36,10 @@ export const DEFAULT_CONFIG: Config = {
     participants: [],
     max_rounds: 3,
     require_consensus: true,
+  },
+  brainstorm: {
+    max_turns: 20,
+    secondary_agent: "codex",
   },
   max_review_iterations: 3,
 };
@@ -254,6 +258,25 @@ function validateDiscussion(config: Config, candidatePath: string): void {
   }
 }
 
+function validateBrainstorm(config: Config, candidatePath: string): void {
+  if (!isPlainObject(config.brainstorm)) {
+    throw new Error(`Invalid brainstorm in ${candidatePath}; expected an object`);
+  }
+
+  if (!Number.isInteger(config.brainstorm.max_turns) || config.brainstorm.max_turns <= 0) {
+    throw new Error(`Invalid brainstorm.max_turns in ${candidatePath}; expected positive integer`);
+  }
+
+  if (
+    typeof config.brainstorm.secondary_agent !== "string" ||
+    !ALLOWED_AGENTS.has(config.brainstorm.secondary_agent as AgentName)
+  ) {
+    throw new Error(
+      `Invalid brainstorm.secondary_agent in ${candidatePath}; expected claude, codex, or gemini`
+    );
+  }
+}
+
 export function loadConfig(options: { cwd?: string; configPath?: string | null } = {}): Config {
   const cwd = options.cwd || process.cwd();
   const candidatePath = options.configPath || path.join(cwd, ".agentpipe.json");
@@ -287,6 +310,7 @@ export function loadConfig(options: { cwd?: string; configPath?: string | null }
   }
 
   validateDiscussion(config, candidatePath);
+  validateBrainstorm(config, candidatePath);
 
   if (!Number.isInteger(config.max_review_iterations) || config.max_review_iterations <= 0) {
     throw new Error(`Invalid max_review_iterations in ${candidatePath}; expected positive integer`);

@@ -1,6 +1,6 @@
 // Terminal UI utilities — zero dependencies, ANSI escape codes only
 
-import { AgentName, StepPromptScope, Sentiment, ReviewVerdict } from "./types";
+import { AgentName, StepPromptScope, Sentiment, ReviewVerdict, TaskMode } from "./types";
 
 // --- ANSI codes ---
 
@@ -96,6 +96,7 @@ export function runBanner(params: {
   maxHops: number;
   timeoutMs: number;
   discussionEnabled: boolean;
+  taskMode?: TaskMode;
   reviewGate: boolean;
   logPath: string;
   lockPath: string;
@@ -118,9 +119,13 @@ export function runBanner(params: {
     `  ${dim("Primary:")} ${agentLabel(params.primaryAgent)}  ${dim("Hops:")} ${params.maxHops}  ${dim("Timeout:")} ${Math.round(params.timeoutMs / 1000)}s  ${dim("No-progress:")} ${params.noProgressHops}`
   );
 
+  if (params.taskMode) {
+    lines.push(`  ${dim("Mode:")} ${wrap(FG_BLUE, params.taskMode)}`);
+  }
+
   const features: string[] = [];
   if (params.discussionEnabled)
-    features.push(wrap(FG_GREEN, "discuss"));
+    features.push(wrap(FG_GREEN, params.taskMode === "fix" ? "diagnose" : "brainstorm"));
   if (params.reviewGate) features.push(wrap(FG_GREEN, "review-gate"));
   if (features.length > 0) {
     lines.push(`  ${dim("Features:")} ${features.join(dim("  "))}`);
@@ -341,6 +346,47 @@ export function createColoredPrefixedWriter(
     }
     target.write(output);
   };
+}
+
+// --- Brainstorm ---
+
+export function brainstormBanner(
+  primary: AgentName,
+  secondary: AgentName,
+  maxTurns: number,
+  mode: TaskMode
+): string {
+  const title = mode === "fix" ? "Diagnose" : "Brainstorm";
+  const lines: string[] = [];
+  lines.push(sectionHeader(title));
+  lines.push(`  ${dim("Agents:")} ${agentLabel(primary)} ${dim("+")} ${agentLabel(secondary)}`);
+  lines.push(`  ${dim("Max turns:")} ${maxTurns}`);
+  return lines.join("\n");
+}
+
+export function brainstormParallelNote(primary: AgentName, secondary: AgentName): string {
+  return `\n  ${dim("▸")} Both ${agentLabel(primary)} and ${agentLabel(secondary)} thinking in parallel...`;
+}
+
+export function brainstormTurnNote(turn: number, agent: AgentName, message: string): string {
+  const clipped = message.length > 100 ? message.slice(0, 97) + "..." : message;
+  return `  ${dim("turn " + turn + ":")} ${agentLabel(agent)} ${dim("→")} ${clipped}`;
+}
+
+export function brainstormReplyNote(turn: number, maxTurns: number, agent: AgentName): string {
+  return `\n${dim("──")} ${bold("Turn " + turn + "/" + maxTurns)} ${dim("│")} ${agentLabel(agent)} ${dim(pad("─", 24))}`;
+}
+
+export function brainstormAgreedNote(turn: number): string {
+  return `\n  ${wrap(FG_GREEN, "✓")} ${bold("Agreed")} ${dim("at turn " + turn)}`;
+}
+
+export function brainstormMaxTurnsNote(maxTurns: number): string {
+  return `\n  ${wrap(FG_YELLOW, "⚠")} ${bold("Max turns reached")} ${dim("(" + maxTurns + ")")} — using best proposal`;
+}
+
+export function brainstormCompleteNote(totalHops: number): string {
+  return `\n  ${dim("Brainstorm:")} complete ${dim("(" + totalHops + " hops used)")}`;
 }
 
 export function heartbeat(

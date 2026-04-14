@@ -22,11 +22,13 @@ import {
   RunInput,
   StepPromptScope,
   TargetName,
+  TaskMode,
 } from "./types";
 import {
   runPlanAndDiscuss,
   inferDiscussionParticipants,
 } from "./discussion";
+import { runBrainstorm } from "./brainstorm";
 import { createRunSurface, RunSurface } from "./run-ui";
 import * as ui from "./ui";
 
@@ -567,6 +569,13 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
       discussion: { ...config.discussion, enabled: true },
     };
   }
+  const taskMode: TaskMode = input.taskMode || "fast";
+  if (input.maxTurns !== undefined && input.maxTurns !== null && input.maxTurns > 0) {
+    config = {
+      ...config,
+      brainstorm: { ...config.brainstorm, max_turns: input.maxTurns },
+    };
+  }
   const runId = randomUUID();
   const logger = createRunLogger({ cwd, config, runId });
   const lock = acquireRunLock({ cwd, config, runId });
@@ -646,7 +655,8 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
     primaryAgent: currentAgent,
     maxHops,
     timeoutMs: effectiveTimeout,
-    discussionEnabled: config.discussion.enabled,
+    discussionEnabled: config.discussion.enabled || taskMode === "build" || taskMode === "fix" || taskMode === "brainstorm",
+    taskMode,
     reviewGate: config.review_gate,
     logPath: logger.logPath,
     lockPath: lock.lockPath,
@@ -692,8 +702,58 @@ export async function runOrchestrator(input: RunInput): Promise<OrchestratorResu
       validateConfiguredAgentsAvailable(config, currentAgent);
     }
 
-    // --- Plan & Discussion phase (before implementation) ---
-    if (config.discussion.enabled) {
+    // --- Brainstorm / Diagnose phase (task mode driven) ---
+    if (taskMode === "build" || taskMode === "fix" || taskMode === "brainstorm") {
+      const secondaryAgent = config.brainstorm.secondary_agent as AgentName;
+
+      const brainstormResult = await runBrainstorm(
+        input.task,
+        currentAgent,
+        secondaryAgent,
+        taskMode,
+        {
+          config,
+          cwd,
+          invokeAgentFn,
+          askHumanInputFn: requestHumanInput,
+          surface,
+          logger,
+          timeoutOverrideMs,
+        }
+      );
+
+      // Add brainstorm turns to conversation history
+      for (const turn of brainstormResult.turns) {
+        appendConversationTurn(
+          conversationHistory,
+          turn.speaker,
+          `[${taskMode === "fix" ? "DIAGNOSE" : "BRAINSTORM"}] ${turn.message}`
+        );
+      }
+
+      hopCount += brainstormResult.totalHops;
+      surface.note(ui.brainstormCompleteNote(brainstormResult.totalHops));
+
+      logger.logEvent({
+        type: "brainstorm_phase_completed",
+        mode: taskMode,
+        hops_used: brainstormResult.totalHops,
+        turns: brainstormResult.turns.length,
+      });
+
+      if (taskMode === "brainstorm") {
+        // Brainstorm-only mode: done, no implementation
+        return finishRun(hopCount, brainstormResult.finalPlan);
+      }
+
+      // For build/fix: use the brainstorm result as the implementation task
+      currentMessage = `## Agreed Plan\n\n${brainstormResult.finalPlan}\n\nImplement this now.`;
+      currentMessageSpeaker = currentAgent;
+      surface.note(ui.implementationHeader());
+    }
+
+    // --- Plan & Discussion phase (legacy --discuss flag) ---
+    if (config.discussion.enabled && taskMode === "fast") {
       const discussionParticipants =
         config.discussion.participants.length > 0
           ? config.discussion.participants

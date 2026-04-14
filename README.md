@@ -15,46 +15,56 @@ npm install -g agent-pipe
 
 ---
 
-`agent-pipe` (`cagp`) is a tiny CLI that wires Claude, Codex, and Gemini into a real engineering team workflow — plan, discuss, implement, review, iterate — with structured handoffs between models, not copy-paste.
+`agent-pipe` (`cagp`) is a tiny CLI that wires Claude, Codex, and Gemini into a real engineering team workflow — brainstorm, implement, review, iterate — with structured handoffs between models, not copy-paste.
 
-One command. Multiple AI brains. Code that went through an actual review cycle before it lands.
+Four commands. Two AI brains. Code that went through an actual review cycle before it lands.
 
 ```bash
-agent-pipe run "implement JWT refresh token flow" --discuss
+agent-pipe fast "add rate limiting"          # implement + review
+agent-pipe fix "login fails with + in email" # diagnose together, then fix + review
+agent-pipe build "JWT refresh token flow"    # brainstorm, then implement + review
+agent-pipe brainstorm "Redis vs Memcached?"  # brainstorm only, no code
 ```
 
 ```
-  ┌─ plan & discuss ─────────────────────────────────────────────────────────┐
-  │                                                                           │
-  │  Codex  →  "Add refresh token rotation with 7-day expiry, blacklisting   │
-  │             on logout, and silent re-auth on 401"                         │
-  │                                                                           │
-  │  Claude →  partial  "How do we handle token revocation across instances?" │
-  │  Gemini →  agree    "Solid approach. Add revocation list to the plan."    │
-  │                                                                           │
-  │  Codex  →  (revised) "Added Redis-backed revocation list to approach"    │
-  │  Claude →  agree                                                          │
-  │  Gemini →  agree    ✓ consensus reached                                   │
-  └───────────────────────────────────────────────────────────────────────────┘
+  ━━ Brainstorm ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  ┌─ implement ──────────────────────────────────────────────────────────────┐
-  │  [codex][primary] Implementing JWT refresh with rotation...              │
-  │  [codex][primary] Writing tests...                                       │
-  │  [codex][primary] ✓ done — routing to review                            │
-  └───────────────────────────────────────────────────────────────────────────┘
+  Agents: Claude + Codex
+  Max turns: 20
 
-  ┌─ review ─────────────────────────────────────────────────────────────────┐
-  │  [gemini][review] ↻ request-changes                                      │
-  │  │ src/auth/tokens.ts:47  — refresh token not invalidated on rotation    │
-  │  │ src/auth/tokens.ts:89  — missing null check before decode             │
-  └───────────────────────────────────────────────────────────────────────────┘
+  ▸ Both Claude and Codex thinking in parallel...
 
-  ┌─ fix & re-review ────────────────────────────────────────────────────────┐
-  │  [codex][primary] Addressing 2 review comments...                        │
-  │  [gemini][review] ✓ approve                                              │
-  └───────────────────────────────────────────────────────────────────────────┘
+  turn 1: Claude → "Add refresh token rotation with 7-day expiry, Redis
+           revocation list, silent re-auth on 401"
+  turn 1: Codex  → "Token rotation + blacklist on logout. Use DB not Redis
+           — simpler for this scale"
 
-  ✅  done  (7 hops · log: .agentpipe/runs/abc-123.jsonl)
+  ── Turn 2/20 │ Claude ──────────────────────────
+  turn 2: Claude → "DB adds latency on every auth check. Redis is O(1)
+           lookup. But agree on rotation approach."
+
+  ── Turn 3/20 │ Codex ───────────────────────────
+  turn 3: Codex  → "AGREED — Redis for revocation, DB for refresh token
+           store. Rotation with 7-day expiry.
+           Pros: fast revocation check, simple rotation
+           Cons: Redis dependency, need cache invalidation on deploy"
+
+  ✓ Agreed at turn 3
+
+  ━━ Implementation ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  [claude][primary] Implementing JWT refresh with rotation...
+  [claude][primary] Writing tests...
+  [claude][primary] ✓ done — routing to review
+
+  [codex][review] ↻ request-changes
+  │ src/auth/tokens.ts:47  — refresh token not invalidated on rotation
+  │ src/auth/tokens.ts:89  — missing null check before decode
+
+  [claude][primary] Fixing 2 review comments...
+  [codex][review] ✓ approve
+
+  ✅  done  (8 hops · log: .agentpipe/runs/abc-123.jsonl)
 ```
 
 ---
@@ -67,24 +77,19 @@ We abandoned that rule the moment we started using AI coding agents.
 
 When Claude writes your auth module and Claude reviews it, the same reasoning patterns that introduced the bug are reviewing the bug. It has consistent blind spots — and so does every other model. What looks "complete" to the author always has gaps that a different perspective would catch.
 
-Beyond review, each model genuinely thinks differently. Claude is strong at architecture and planning. Codex is fast, pragmatic, and great at grinding through implementation. Gemini has a huge context window and a different analytical lens. Running all your tasks through one model wastes what the others are good at.
+Beyond review, each model genuinely thinks differently. Claude is strong at architecture and planning. Codex is fast, pragmatic, and great at grinding through implementation. Running all your tasks through one model wastes what the others are good at.
 
-`agent-pipe` fixes both problems. It orchestrates real autonomous coding CLIs into a `plan → discuss → implement → review` loop, with structured JSON contracts as the handoff mechanism. Each agent runs as its own process with full shell access, file editing, and tool use — these aren't personas inside one app. They're independent tools passing work to each other.
+`agent-pipe` fixes both problems. It orchestrates real autonomous coding CLIs into a `brainstorm → implement → review` loop, with structured JSON contracts as the handoff mechanism. Each agent runs as its own process with full shell access, file editing, and tool use — these aren't personas inside one app. They're independent tools passing work to each other.
 
 ---
 
 ## What it actually does
 
 ```
-                                         ┌─────────────┐
-  Your task ──────────────────────────▶ │    Plan     │ (primary proposes approach)
-                                         └──────┬──────┘
-                                                │
-                                         ┌──────▼──────┐
-                                         │   Discuss   │ (others review + raise concerns)
-                                         └──────┬──────┘
-                                    revise │         │ consensus
-                                           ◀─────────┘
+                                         ┌──────────────┐
+  Your task ──────────────────────────▶ │  Brainstorm  │ (both agents propose in parallel,
+                                         │              │  then discuss until agreed)
+                                         └──────┬───────┘
                                                 │
                                          ┌──────▼──────┐
                                          │  Implement  │◀──────────────┐
@@ -97,7 +102,24 @@ Beyond review, each model genuinely thinks differently. Claude is strong at arch
                                              ✅ Done
 ```
 
-- **Plan & discuss** is optional (`--discuss`). Skip it for quick tasks.
+### Commands
+
+| Command | What happens |
+|---------|-------------|
+| **`fast`** | Straight to implement + review. No brainstorm. For quick tasks. (`run` is an alias) |
+| **`fix`** | Both agents diagnose the bug in parallel, compare notes (max 20 turns), agree on root cause + minimal fix, then implement + review. |
+| **`build`** | Both agents brainstorm the design in parallel, discuss until agreed (max 20 turns), then implement + review. For new features and refactors. |
+| **`brainstorm`** | Brainstorm only — no implementation. Both agents propose, discuss, output agreed plan with pros/cons. For architecture decisions and design questions. |
+
+### Defaults
+
+- **Primary agent**: Claude (implements)
+- **Secondary agent**: Codex (reviews, and brainstorms alongside primary)
+- **Max brainstorm/diagnose turns**: 20
+
+### Key behaviors
+
+- **Brainstorm** starts both agents in parallel — no anchoring bias. They converge through terse, agent-to-agent discussion. When one says "AGREED", the plan is locked.
 - **Review** is always enforced when repo state changed (configurable).
 - **Review iteration** loops automatically — reviewer flags specific `file:line` issues, implementer fixes them, reviewer re-reviews. Up to `max_review_iterations` cycles.
 - **Pair** is advisory: an agent can call in the pair model mid-task for advice, then continue. No routing control.
@@ -133,56 +155,70 @@ cd /path/to/your-project
 # 2. Create a config (edit routing to match the CLIs you actually have)
 agent-pipe init
 
-# 3. Run a task
-agent-pipe run "add rate limiting to the auth endpoints"
+# 3. Quick task — implement + review
+agent-pipe fast "add rate limiting to the auth endpoints"
 
-# 4. Run with team discussion first
-agent-pipe run "refactor the payment module" --discuss
+# 4. Bug fix — diagnose together, then fix
+agent-pipe fix "auth token not refreshing after expiry"
+
+# 5. New feature — brainstorm first, then build
+agent-pipe build "add webhook system for payment events"
+
+# 6. Design question — brainstorm only
+agent-pipe brainstorm "should we use event sourcing or CRUD for the order system?"
 ```
 
-After `init`, open `.agentpipe.json` and set `routing.primary`, `routing.review`, and `routing.pair` to the CLIs you have installed. The defaults (`codex`/`gemini`/`claude`) are just a template.
+After `init`, open `.agentpipe.json` and set `routing.primary` and `routing.review` to the CLIs you have installed. The defaults (`claude`/`codex`) work if you have both.
 
 ---
 
 ## Interactive mode
 
-Run `agent-pipe` with no arguments in a terminal and you get a REPL — type tasks, see runs, come back for more without reinvoking the CLI each time:
+Run `agent-pipe` with no arguments in a terminal and you get a REPL:
 
 ```
 $ agent-pipe
 
-  agent-pipe v1.2.0 — interactive mode
-  Type a task (with optional flags) or a command.
-  Commands: /help, /quit
+  agent-pipe v1.3.0 — interactive mode
+  Commands: fast, fix, build, brainstorm
+  Example: fix "auth token not refreshing"
+  /help, /quit
 
-> add dark mode to the settings page
-  ... [runs the full orchestration] ...
+> fast add dark mode to the settings page
+  ... [runs implement + review] ...
 
-> fix the flaky test in auth.test.ts --primary-agent claude --max-hops 5
-  ... [runs again] ...
+> fix flaky test in auth.test.ts --max-hops 5
+  ... [diagnoses + fixes] ...
+
+> brainstorm should we split the monolith into microservices
+  ... [brainstorm only] ...
 
 > /quit
 Bye!
 ```
 
-Full CLI flags work inline. `/help` shows usage. Ctrl+D or `/quit` exits.
+Prefix with the command name. Full CLI flags work inline. `/help` shows usage. Ctrl+D or `/quit` exits.
 
 ---
 
 ## CLI reference
 
 ```bash
-agent-pipe run "<task>" [options]
+agent-pipe fast "<task>" [options]        # implement + review
+agent-pipe fix "<bug>" [options]          # diagnose + fix + review
+agent-pipe build "<feature>" [options]    # brainstorm + implement + review
+agent-pipe brainstorm "<question>" [options]  # brainstorm only
+agent-pipe run "<task>" [options]         # alias for fast
 agent-pipe init [options]
-agent-pipe          # interactive REPL (TTY only)
+agent-pipe                                # interactive REPL (TTY only)
 ```
 
-### Run options
+### Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--primary-agent <name>` | config | Override primary agent: `claude`, `codex`, `gemini` |
-| `--discuss` | off | Run plan & discuss phase before implementation |
+| `--primary-agent <name>` | `claude` | Override primary agent: `claude`, `codex`, `gemini` |
+| `--max-turns <n>` | `20` | Max brainstorm/diagnose turns |
 | `--max-hops <n>` | `50` | Hard cap on routing hops |
 | `--timeout-ms <n>` | `1800000` | Per-agent timeout (30 min default) |
 | `--max-retries <n>` | `1` | Contract parse retries before asking human |
@@ -215,13 +251,13 @@ agent-pipe          # interactive REPL (TTY only)
 agent-pipe init   # writes .agentpipe.json
 ```
 
-The generated file has every field with its default value and a comment in the format. The most important thing to set is `routing`:
+The most important thing to set is `routing`:
 
 ```json
 {
   "routing": {
-    "primary": "codex",
-    "review": "claude",
+    "primary": "claude",
+    "review": "codex",
     "pair": "gemini",
     "ask-human": "human",
     "done": "stop"
@@ -235,7 +271,9 @@ Everything else is optional — sensible defaults apply.
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `routing` | codex/gemini/claude | Maps actions to agents. **Change this** to match what you have installed. |
+| `routing` | claude/codex/gemini | Maps actions to agents. **Change this** to match what you have installed. |
+| `brainstorm.max_turns` | `20` | Max brainstorm/diagnose discussion turns |
+| `brainstorm.secondary_agent` | `"codex"` | Agent that brainstorms alongside primary |
 | `max_hops` | `50` | Max routing hops before stopping |
 | `agent_timeout_ms` | `1800000` | Per-agent timeout (ms) |
 | `max_invalid_contract_retries` | `1` | Contract parse retries before human escalation |
@@ -244,15 +282,20 @@ Everything else is optional — sensible defaults apply.
 | `log_dir` | `.agentpipe/runs` | JSONL run log directory |
 | `review_gate` | `true` | Force `primary → done` through review if repo changed since last review |
 | `max_review_iterations` | `3` | Max review → fix → re-review cycles |
-| `discussion.enabled` | `false` | Enable plan & discuss phase (or use `--discuss`) |
-| `discussion.participants` | `[]` | Agents to include in discussion (empty = infer from routing) |
-| `discussion.max_rounds` | `3` | Discussion rounds before deadlock → human |
-| `discussion.require_consensus` | `true` | False = partial consensus (no disagreements) is enough |
 | `agent_timeouts_ms` | `{}` | Per-agent timeout overrides |
 | `adapter_modes` | `{}` | `"auto"` (default) or `"print"` per agent |
 | `adapter_args` | `{}` | Extra CLI flags appended to the resolved adapter command |
 | `adapters` | `{}` | Full command override per agent |
 | `step_prompts` | `{}` | Hidden instructions injected per stage: `primary`, `review`, `pair` |
+
+**Legacy fields** (still supported for backward compatibility):
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `discussion.enabled` | `false` | Enable legacy plan & discuss phase (use `build` command instead) |
+| `discussion.participants` | `[]` | Agents to include in discussion |
+| `discussion.max_rounds` | `3` | Discussion rounds before deadlock → human |
+| `discussion.require_consensus` | `true` | False = partial consensus is enough |
 
 Add to `.gitignore`:
 ```
@@ -266,12 +309,13 @@ You do not need all three. Route unused actions to the tools you have:
 
 **Claude only:**
 ```json
-{ "routing": { "primary": "claude", "review": "claude", "pair": "claude", "ask-human": "human", "done": "stop" } }
+{ "routing": { "primary": "claude", "review": "claude", "pair": "claude", "ask-human": "human", "done": "stop" },
+  "brainstorm": { "max_turns": 20, "secondary_agent": "claude" } }
 ```
 
-**Claude + Codex (no Gemini):**
+**Claude + Codex (no Gemini) — the default:**
 ```json
-{ "routing": { "primary": "codex", "review": "claude", "pair": "claude", "ask-human": "human", "done": "stop" } }
+{ "routing": { "primary": "claude", "review": "codex", "pair": "codex", "ask-human": "human", "done": "stop" } }
 ```
 
 ### Model selection
@@ -315,19 +359,20 @@ Inject hidden instructions per orchestration stage — agents receive them in th
 
 ---
 
-## How the plan & discuss phase works
+## How brainstorm works
 
-Enable with `--discuss` or `"discussion": { "enabled": true }` in config.
+Used by `build`, `fix`, and `brainstorm` commands.
 
-Before any code is written:
+1. **Parallel proposals** — both agents get the same task simultaneously and propose solutions independently. No anchoring bias.
+2. **Back-and-forth** — agents take turns responding to each other. Terse, agent-to-agent style. No fluff or pleasantries.
+3. **Agreement** — when one agent starts their response with "AGREED", the discussion ends and the final plan (with pros/cons) is locked.
+4. **Max turns** — if agents don't agree within `max_turns` (default 20), the best proposal from the last exchange is used.
 
-1. **Propose** — the primary agent reads the task and outputs a structured plan: what to build, how, which files to touch.
-2. **Discuss** — each participant (other agents from routing, or your explicit `participants` list) reviews the plan and returns a `sentiment` (agree / disagree / partial) with specific `concerns`.
-3. **Consensus** — if everyone agrees (or `require_consensus: false` and no one disagrees), the plan is locked and implementation starts.
-4. **Revise** — if there's disagreement, all feedback goes back to the proposer, who revises and re-proposes. Up to `max_rounds` times.
-5. **Deadlock** — if consensus isn't reached, you're asked to decide.
+For `fix` mode, the prompts are focused on diagnosis: "what's broken, what's the root cause, what's the minimal fix." For `build`/`brainstorm`, they're focused on design: "what's the approach, what are the tradeoffs."
 
-The approved plan becomes the implementation task. The primary agent starts with a team-vetted blueprint instead of flying blind.
+After brainstorm completes:
+- **`build`** and **`fix`**: the agreed plan becomes the implementation task. Primary agent implements, secondary reviews.
+- **`brainstorm`**: the run ends with the agreed plan. No code changes.
 
 ---
 
@@ -341,13 +386,13 @@ Review is not a one-shot gate. When the reviewer returns `request-changes`:
 4. This repeats until `approve` or until `max_review_iterations` is hit.
 
 ```
-[gemini][review] ↻ request-changes
+[codex][review] ↻ request-changes
   src/auth/tokens.ts:47  — refresh token not invalidated on rotation
   src/auth/tokens.ts:89  — missing null check before JWT decode
 
-[codex][primary] Fixing 2 review comments...
+[claude][primary] Fixing 2 review comments...
 
-[gemini][review] ✓ approve
+[codex][review] ✓ approve
 ```
 
 This is what real code review looks like. Not a rubber stamp — an actual back-and-forth until the code is right.
@@ -356,7 +401,7 @@ This is what real code review looks like. Not a rubber stamp — an actual back-
 
 ## Session continuity
 
-`agent-pipe` maintains one session per agent CLI across the full run. When `primary → review → primary`, Codex resumes where it left off instead of starting from scratch. The same applies to pair hops — all pair calls from the same run reuse the same agent session.
+`agent-pipe` maintains one session per agent CLI across the full run. When `primary → review → primary`, Claude resumes where it left off instead of starting from scratch. The same applies to pair hops — all pair calls from the same run reuse the same agent session.
 
 Built-in adapters use native session IDs when the CLI supports them. For Codex, there's a fallback to Codex's local state DB if the session ID is not emitted in stdout.
 
@@ -378,11 +423,6 @@ Every agent response must end with a JSON block. This is how agents tell the orc
     { "file": "src/auth.ts", "line": 47, "comment": "Token not invalidated on rotation" }
   ],
 
-  // Optional — discuss phase only
-  "sentiment": "partial",
-  "concerns": ["No revocation strategy for distributed deployments"],
-  "proposal": { "summary": "...", "approach": "...", "files": ["src/auth.ts"] },
-
   // Optional — when agent needs human input
   "next_action": "ask-human",
   "questions": [{ "id": "q1", "text": "Which database should we use for the token store?" }]
@@ -400,12 +440,12 @@ Every agent response must end with a JSON block. This is how agents tell the orc
 Agent output streams live, prefixed with agent name and scope:
 
 ```
-[codex][primary] Implementing token rotation logic...
-[codex][primary] Running test suite — all 47 tests pass
-[claude][pair]   Consider rotating the signing key on token renewal too
-[gemini][review] ↻ request-changes | src/auth.ts:47 — token not invalidated
-[codex][primary] Fixing 2 comments from review...
-[gemini][review] ✓ approve
+[claude][primary] Implementing token rotation logic...
+[claude][primary] Running test suite — all 47 tests pass
+[gemini][pair]    Consider rotating the signing key on token renewal too
+[codex][review]   ↻ request-changes | src/auth.ts:47 — token not invalidated
+[claude][primary] Fixing 2 comments from review...
+[codex][review]   ✓ approve
 ```
 
 A heartbeat appears every 10 seconds if an agent is running but silent.
@@ -415,7 +455,10 @@ A heartbeat appears every 10 seconds if an agent is running but silent.
 Every run produces `.agentpipe/runs/{runId}.jsonl` — a timestamped, structured log of every step, contract, human response, routing decision, and timing. Useful for debugging, auditing, and replaying.
 
 ```jsonl
-{"ts":"...","type":"run_started","primary_agent":"codex","max_hops":50}
+{"ts":"...","type":"run_started","primary_agent":"claude","max_hops":50}
+{"ts":"...","type":"brainstorm_parallel_start","primary":"claude","secondary":"codex"}
+{"ts":"...","type":"brainstorm_turn","turn":3,"speaker":"codex","agreed":true}
+{"ts":"...","type":"brainstorm_phase_completed","mode":"build","hops_used":4,"turns":4}
 {"ts":"...","type":"step_contract","step_id":3,"contract":{"next_action":"review","review_verdict":"request-changes"}}
 {"ts":"...","type":"review_approved","step_id":5,"iterations":1}
 {"ts":"...","type":"run_completed","status":"done"}
@@ -440,8 +483,8 @@ The no-progress guard fires when git state is unchanged for N consecutive steps.
 **Agent times out**
 Default is 30 min. For complex tasks: `--timeout-ms 3600000`. For per-agent control, use `agent_timeouts_ms` in config.
 
-**Discussion keeps ending in deadlock**
-Try `"require_consensus": false` — partial consensus (no hard disagreements) is often enough to proceed.
+**Brainstorm takes too many turns**
+Reduce with `--max-turns 5` for simpler decisions. The default of 20 is generous — most discussions converge within 3-5 turns.
 
 ---
 
@@ -461,7 +504,8 @@ Uses Node.js built-in test runner with `tsx`. All external dependencies (agent i
 src/
   cli.ts              Argument parsing, validation, REPL loop, main entry
   orchestrator.ts     Main run loop — phases, routing, review iteration
-  discussion.ts       Plan & discuss engine — proposal, consensus, revision
+  brainstorm.ts       Brainstorm engine — parallel proposals, back-and-forth, agreement
+  discussion.ts       Legacy plan & discuss engine (still supported)
   run-ui.ts           RunSurface — plain and TUI rendering surfaces
   config.ts           Config loader, validator, and defaults
   types.ts            All TypeScript types
@@ -493,8 +537,8 @@ import { runOrchestrator } from "agent-pipe/src/orchestrator";
 
 const result = await runOrchestrator({
   task: "add rate limiting to auth endpoints",
-  primaryAgent: "codex",
-  discuss: true,
+  taskMode: "build",
+  primaryAgent: "claude",
   uiMode: "plain",
   cwd: "/path/to/repo",
   runtime: {
@@ -519,7 +563,8 @@ See [API.md](./API.md) for the full reference — `RunInput`, `RunSurface`, adap
 - **The orchestrator is dumb.** Routing logic lives in agent prompts via the contract, not in the pipe.
 - **The contract is small.** Core routing fields only. No code payloads, no file contents.
 - **The repo is shared state.** Agents read files directly from disk. The handoff is a task description, not a data transfer.
-- **Routing is action-based.** Agents say `review`, not `gemini`. The config maps that to whichever model you have.
+- **Routing is action-based.** Agents say `review`, not `codex`. The config maps that to whichever model you have.
+- **Brainstorm before you build.** Two independent proposals beat one. Agent-to-agent discussion catches blind spots before a single line of code is written.
 - **Interrupt human only when needed.** On `ask-human`, deadlocks, parse failures, or safety limits. Not on every step.
 
 ---

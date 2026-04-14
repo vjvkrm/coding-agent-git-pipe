@@ -2,7 +2,7 @@ import path from "path";
 import readline from "readline";
 import { writeDefaultConfig } from "./config";
 import { runOrchestrator } from "./orchestrator";
-import { AgentName, UiMode } from "./types";
+import { AgentName, TaskMode, UiMode } from "./types";
 
 const pkg = require("../package.json") as { version?: string };
 
@@ -17,16 +17,23 @@ function helpText(): string {
     "",
     `  ${B}Usage${R}`,
     `    agent-pipe init ${D}[options]${R}`,
-    `    agent-pipe run ${D}"<task>" [options]${R}`,
+    `    agent-pipe fast ${D}"<task>" [options]${R}        ${D}implement + review${R}`,
+    `    agent-pipe fix ${D}"<bug>" [options]${R}          ${D}diagnose together, then fix + review${R}`,
+    `    agent-pipe build ${D}"<feature>" [options]${R}    ${D}brainstorm, then implement + review${R}`,
+    `    agent-pipe brainstorm ${D}"<question>" [options]${R}  ${D}brainstorm only${R}`,
+    `    agent-pipe run ${D}"<task>" [options]${R}         ${D}alias for fast${R}`,
     "",
     `  ${B}Commands${R}`,
     `    ${B}init${R}                        Create a starter .agentpipe.json`,
-    `    ${B}run${R}                         Execute an orchestration task`,
+    `    ${B}fast${R}  ${D}(run)${R}                 Implement + review ${D}(no brainstorm)${R}`,
+    `    ${B}fix${R}                         Diagnose together, then implement + review`,
+    `    ${B}build${R}                       Brainstorm, then implement + review`,
+    `    ${B}brainstorm${R}                  Brainstorm only ${D}(no implementation)${R}`,
     "",
-    `  ${B}Run options${R}`,
-    `    --primary-agent <name>     Primary agent ${D}(claude|codex|gemini)${R}`,
-    `    --discuss                  Enable plan & discuss phase`,
+    `  ${B}Options${R}`,
+    `    --primary-agent <name>     Primary agent ${D}(claude|codex|gemini, default: claude)${R}`,
     `    --max-hops <number>        Maximum routing hops`,
+    `    --max-turns <number>       Max brainstorm/diagnose turns ${D}(default: 20)${R}`,
     `    --timeout-ms <number>      Per-agent timeout in milliseconds`,
     `    --max-retries <number>     Contract parse retries`,
     `    --no-progress-hops <num>   Ask human if repo stalls for N steps`,
@@ -56,8 +63,9 @@ function replBannerText(version: string): string {
   return [
     "",
     `  ${B}agent-pipe${R} ${D}v${version}${R} — interactive mode`,
-    `  ${D}Type a task (with optional flags) or a command.${R}`,
-    `  ${D}Commands: /help, /quit${R}`,
+    `  ${D}Commands: fast, fix, build, brainstorm${R}`,
+    `  ${D}Example: fix "auth token not refreshing"${R}`,
+    `  ${D}/help, /quit${R}`,
     "",
   ].join("\n");
 }
@@ -67,6 +75,7 @@ function parseRunArgs(args: string[]): {
   primaryAgent: AgentName | null;
   discuss: boolean;
   maxHops: number | null;
+  maxTurns: number | null;
   timeoutMs: number | null;
   maxRetries: number | null;
   noProgressHops: number | null;
@@ -80,6 +89,7 @@ function parseRunArgs(args: string[]): {
     primaryAgent: null as AgentName | null,
     discuss: false,
     maxHops: null as number | null,
+    maxTurns: null as number | null,
     timeoutMs: null as number | null,
     maxRetries: null as number | null,
     noProgressHops: null as number | null,
@@ -95,6 +105,12 @@ function parseRunArgs(args: string[]): {
 
     if (arg === "--discuss") {
       parsed.discuss = true;
+      continue;
+    }
+
+    if (arg === "--max-turns" && next) {
+      parsed.maxTurns = Number(next);
+      i += 1;
       continue;
     }
 
@@ -207,6 +223,10 @@ function validateParsedRunArgs(parsed: ReturnType<typeof parseRunArgs>): string 
     return "--max-hops must be a positive integer";
   }
 
+  if (parsed.maxTurns !== null && (!Number.isInteger(parsed.maxTurns) || parsed.maxTurns <= 0)) {
+    return "--max-turns must be a positive integer";
+  }
+
   if (parsed.timeoutMs !== null && (!Number.isInteger(parsed.timeoutMs) || parsed.timeoutMs <= 0)) {
     return "--timeout-ms must be a positive integer";
   }
@@ -247,12 +267,14 @@ function tokenizeReplInput(input: string): string[] {
   );
 }
 
-async function runParsedTask(parsed: ReturnType<typeof parseRunArgs>, task: string): Promise<void> {
+async function runParsedTask(parsed: ReturnType<typeof parseRunArgs>, task: string, taskMode: TaskMode = "fast"): Promise<void> {
   const result = await runOrchestrator({
     task,
+    taskMode,
     primaryAgent: parsed.primaryAgent,
     discuss: parsed.discuss || null,
     maxHops: parsed.maxHops,
+    maxTurns: parsed.maxTurns,
     timeoutMs: parsed.timeoutMs,
     maxInvalidContractRetries: parsed.maxRetries,
     noProgressHops: parsed.noProgressHops,
@@ -324,10 +346,27 @@ async function runRepl(): Promise<void> {
       continue;
     }
 
-    const parsed = parseRunArgs(tokenizeReplInput(trimmed));
+    const tokens = tokenizeReplInput(trimmed);
+    const REPL_COMMANDS: Record<string, TaskMode> = {
+      run: "fast",
+      fast: "fast",
+      fix: "fix",
+      build: "build",
+      brainstorm: "brainstorm",
+    };
+
+    let replMode: TaskMode = "fast";
+    let argsTokens = tokens;
+
+    if (tokens.length > 0 && REPL_COMMANDS[tokens[0]]) {
+      replMode = REPL_COMMANDS[tokens[0]];
+      argsTokens = tokens.slice(1);
+    }
+
+    const parsed = parseRunArgs(argsTokens);
     const task = parsed.taskParts.join(" ").trim();
     if (!task) {
-      noticeText = 'No task provided. Example: add JWT refresh token support';
+      noticeText = 'No task provided. Example: fix "auth token not refreshing"';
       continue;
     }
 
@@ -340,7 +379,7 @@ async function runRepl(): Promise<void> {
     noticeText = null;
 
     try {
-      await runParsedTask(parsed, task);
+      await runParsedTask(parsed, task, replMode);
     } catch (error) {
       console.error(`Error: ${(error as Error).message}`);
     }
@@ -373,11 +412,13 @@ export async function main(argv = process.argv): Promise<void> {
     process.exit(0);
   }
 
-  if (command !== "run" && command !== "init") {
-    console.error(`Unknown command: ${command}`);
-    printHelp();
-    process.exit(1);
-  }
+  const TASK_COMMANDS: Record<string, TaskMode> = {
+    run: "fast",
+    fast: "fast",
+    fix: "fix",
+    build: "build",
+    brainstorm: "brainstorm",
+  };
 
   if (command === "init") {
     const parsed = parseInitArgs(args.slice(1));
@@ -395,15 +436,22 @@ export async function main(argv = process.argv): Promise<void> {
 
     console.log(`Created ${createdPath}`);
     console.log(
-      "Next: set routing.primary, routing.review, and routing.pair to the CLIs you actually use, then run `agent-pipe run \"<task>\"` from that repo."
+      "Next: set routing.primary, routing.review, and routing.pair to the CLIs you actually use, then run `agent-pipe fast \"<task>\"` from that repo."
     );
     process.exit(0);
+  }
+
+  const taskMode = TASK_COMMANDS[command!];
+  if (!taskMode) {
+    console.error(`Unknown command: ${command}`);
+    printHelp();
+    process.exit(1);
   }
 
   const parsed = parseRunArgs(args.slice(1));
   const task = parsed.taskParts.join(" ").trim();
   if (!task) {
-    console.error('Missing task string. Example: agent-pipe run "add JWT refresh token support"');
+    console.error(`Missing task string. Example: agent-pipe ${command} "add JWT refresh token support"`);
     process.exit(1);
   }
 
@@ -413,7 +461,7 @@ export async function main(argv = process.argv): Promise<void> {
     process.exit(1);
   }
 
-  await runParsedTask(parsed, task);
+  await runParsedTask(parsed, task, taskMode);
 }
 
 if (require.main === module) {

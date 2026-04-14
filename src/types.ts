@@ -5,6 +5,7 @@ export type StepPromptScope = "primary" | "review" | "pair";
 export type Sentiment = "agree" | "disagree" | "partial" | "neutral";
 export type ReviewVerdict = "approve" | "request-changes" | "reject";
 export type UiMode = "auto" | "plain" | "tui";
+export type TaskMode = "fast" | "fix" | "build" | "brainstorm";
 
 export interface Question {
   id: string;
@@ -45,6 +46,11 @@ export interface DiscussionConfig {
   require_consensus: boolean;
 }
 
+export interface BrainstormConfig {
+  max_turns: number;
+  secondary_agent: AgentName;
+}
+
 export interface Config {
   routing: Record<NextAction, TargetName>;
   max_hops: number;
@@ -61,6 +67,7 @@ export interface Config {
   review_gate: boolean;
   // v2 fields
   discussion: DiscussionConfig;
+  brainstorm: BrainstormConfig;
   max_review_iterations: number;
 }
 
@@ -102,9 +109,11 @@ export interface OrchestratorResult {
 
 export interface RunInput {
   task: string;
+  taskMode?: TaskMode | null;
   primaryAgent?: AgentName | null;
   discuss?: boolean | null;
   maxHops?: number | null;
+  maxTurns?: number | null;
   timeoutMs?: number | null;
   maxInvalidContractRetries?: number | null;
   noProgressHops?: number | null;

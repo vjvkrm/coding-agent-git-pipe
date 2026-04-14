@@ -92,9 +92,11 @@ The main entry point. Runs the full orchestration loop: invoke agent, parse cont
 ```typescript
 interface RunInput {
   task: string;                              // The task description
-  primaryAgent?: AgentName | null;           // Override primary agent (default: config routing.primary)
-  discuss?: boolean | null;                  // Enable plan & discuss phase (overrides config)
+  taskMode?: TaskMode | null;                // "fast" | "fix" | "build" | "brainstorm" (default: "fast")
+  primaryAgent?: AgentName | null;           // Override primary agent (default: claude)
+  discuss?: boolean | null;                  // Legacy: enable plan & discuss phase
   maxHops?: number | null;                   // Override max hops (default: config)
+  maxTurns?: number | null;                  // Override brainstorm max turns (default: 20)
   timeoutMs?: number | null;                 // Override per-agent timeout (default: config)
   maxInvalidContractRetries?: number | null;  // Override retry count (default: config)
   noProgressHops?: number | null;            // Override no-progress guard (default: config)
@@ -107,6 +109,8 @@ interface RunInput {
     getRepoStateSignature?: RepoStateFn;     // Custom repo state checker
   };
 }
+
+type TaskMode = "fast" | "fix" | "build" | "brainstorm";
 ```
 
 **`uiMode`** controls how output is rendered during the run.
@@ -281,7 +285,65 @@ You must end your response with exactly one JSON block and no text after it:
 
 ---
 
-## Discussion Module
+## Brainstorm Module
+
+### `runBrainstorm`
+
+```typescript
+function runBrainstorm(
+  task: string,
+  primaryAgent: AgentName,
+  secondaryAgent: AgentName,
+  mode: TaskMode,
+  deps: BrainstormDeps
+): Promise<BrainstormResult>
+```
+
+Runs the brainstorm/diagnose phase. Called by the orchestrator when `taskMode` is `build`, `fix`, or `brainstorm`.
+
+**Flow:**
+1. **Parallel proposals**: Both agents receive the task simultaneously and propose solutions independently.
+2. **Back-and-forth**: Agents take turns responding. Communication is terse, agent-to-agent style.
+3. **Agreement**: When an agent starts their response with "AGREED", the discussion ends.
+4. **Max turns**: If agents don't agree within `max_turns`, the last exchange is used as the final plan.
+
+For `fix` mode, prompts focus on diagnosis (root cause, minimal fix). For `build`/`brainstorm`, prompts focus on design (approach, tradeoffs).
+
+**Dependencies (`BrainstormDeps`):**
+
+```typescript
+interface BrainstormDeps {
+  config: Config;
+  cwd: string;
+  invokeAgentFn: InvokeAgentFn;
+  askHumanInputFn: AskHumanInputFn;
+  surface: RunSurface;
+  logger: { logEvent: (event: Record<string, unknown>) => void };
+  timeoutOverrideMs?: number;
+}
+```
+
+### `BrainstormResult`
+
+```typescript
+interface BrainstormResult {
+  turns: BrainstormTurn[];    // All discussion turns
+  finalPlan: string;          // The agreed-upon plan
+  totalHops: number;          // Agent invocations used
+}
+
+interface BrainstormTurn {
+  speaker: AgentName;
+  message: string;
+  turn: number;
+}
+```
+
+---
+
+## Discussion Module (Legacy)
+
+The discussion module is still available for backward compatibility via the `--discuss` flag or `discussion.enabled` config. For new usage, prefer the `build`/`fix`/`brainstorm` commands which use the brainstorm module.
 
 ### `runPlanAndDiscuss`
 
@@ -386,7 +448,13 @@ interface Config {
   step_prompts: Record<"primary" | "review" | "pair", string[]>;
   review_gate: boolean;
   discussion: DiscussionConfig;
+  brainstorm: BrainstormConfig;
   max_review_iterations: number;
+}
+
+interface BrainstormConfig {
+  max_turns: number;               // Max brainstorm/diagnose turns (default: 20)
+  secondary_agent: AgentName;      // Agent that brainstorms alongside primary (default: "codex")
 }
 
 interface DiscussionConfig {
@@ -434,9 +502,9 @@ The built-in routing defaults are starter values, not a requirement. After `agen
 
 | Field | Default |
 |-------|---------|
-| `routing.primary` | `"codex"` |
-| `routing.review` | `"gemini"` |
-| `routing.pair` | `"claude"` |
+| `routing.primary` | `"claude"` |
+| `routing.review` | `"codex"` |
+| `routing.pair` | `"gemini"` |
 | `routing.ask-human` | `"human"` |
 | `routing.done` | `"stop"` |
 | `max_hops` | `50` |
@@ -455,6 +523,8 @@ The built-in routing defaults are starter values, not a requirement. After `agen
 | `discussion.participants` | `[]` (auto-infer from routing) |
 | `discussion.max_rounds` | `3` |
 | `discussion.require_consensus` | `true` |
+| `brainstorm.max_turns` | `20` |
+| `brainstorm.secondary_agent` | `"codex"` |
 | `max_review_iterations` | `3` |
 
 The CLI command `agent-pipe init` writes this default config shape to `.agentpipe.json` in the target repo. Users are expected to review the generated `routing` block and choose which installed CLI owns `primary`, `review`, and `pair`.
@@ -800,6 +870,9 @@ type NextAction = "primary" | "review" | "pair" | "ask-human" | "done";
 // UI rendering mode
 type UiMode = "auto" | "plain" | "tui";
 
+// Task mode (CLI command)
+type TaskMode = "fast" | "fix" | "build" | "brainstorm";
+
 // Discussion sentiment
 type Sentiment = "agree" | "disagree" | "partial" | "neutral";
 
@@ -843,7 +916,11 @@ Every run produces a JSONL file at `{log_dir}/{run_id}.jsonl`. Each line is a JS
 | `review_gate_redirect` | `step_id`, `agent`, `original_action`, `redirected_to`, `reason` | `primary -> done` was intercepted and routed to `review` because repo state changed since the last review or repo state was unavailable |
 | `review_iteration_redirect` | `step_id`, `agent`, `review_iteration`, `max_iterations`, `review_comments_count` | Reviewer requested changes; auto-routing back to primary |
 | `review_approved` | `step_id`, `agent`, `iterations` | Reviewer approved after N iterations |
-| `discussion_phase_started` | `proposer`, `participants`, `max_rounds`, `require_consensus` | Plan & discuss phase begins |
+| `brainstorm_parallel_start` | `primary`, `secondary` | Brainstorm parallel proposal phase begins |
+| `brainstorm_parallel_done` | `primary_msg`, `secondary_msg` | Both agents proposed |
+| `brainstorm_turn` | `turn`, `speaker`, `agreed` | A brainstorm discussion turn |
+| `brainstorm_phase_completed` | `mode`, `hops_used`, `turns` | Brainstorm phase ends |
+| `discussion_phase_started` | `proposer`, `participants`, `max_rounds`, `require_consensus` | Legacy plan & discuss phase begins |
 | `discussion_phase_completed` | `status`, `hops_used`, `proposal_summary`, `rounds_count` | Plan & discuss phase ends |
 | `plan_phase_started` | `agent` | Primary agent begins planning |
 | `plan_phase_completed` | `agent`, `proposal_summary`, `confidence` | Plan produced |

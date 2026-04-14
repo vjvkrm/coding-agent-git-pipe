@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.3.0 - 2026-04-14
+
+### Added
+- **Task mode commands**: Four new CLI commands replace the old `run --discuss` workflow:
+  - `agent-pipe fast "task"` — implement + review, no brainstorm. (`run` is an alias for backward compatibility)
+  - `agent-pipe fix "bug"` — both agents diagnose the bug in parallel, discuss to agree on root cause and minimal fix, then implement + review.
+  - `agent-pipe build "feature"` — both agents brainstorm the design in parallel, discuss until agreed, then implement + review.
+  - `agent-pipe brainstorm "question"` — brainstorm only, no implementation. Outputs agreed plan with pros/cons.
+- **Brainstorm engine** (`src/brainstorm.ts`): New module replacing the discussion model for day-to-day use. Both agents receive the task simultaneously, propose independently (no anchoring bias), then go back-and-forth in terse agent-to-agent discussion until one says "AGREED" or max turns is reached.
+- **`--max-turns` flag**: Override the brainstorm/diagnose turn limit from the CLI (default: 20).
+- **`brainstorm` config block**: `brainstorm.max_turns` (default 20) and `brainstorm.secondary_agent` (default "codex") in `.agentpipe.json`.
+- **REPL command prefixes**: Interactive mode now recognizes `fast`, `fix`, `build`, `brainstorm` as prefixes. Example: `fix "auth token not refreshing"`.
+- **New JSONL events**: `brainstorm_parallel_start`, `brainstorm_parallel_done`, `brainstorm_turn`, `brainstorm_phase_completed`.
+
+### Changed
+- **Default routing**: Primary agent is now `claude` (was `codex`), review agent is now `codex` (was `gemini`). This reflects the most common two-agent setup.
+- **REPL banner**: Now shows available commands (`fast`, `fix`, `build`, `brainstorm`) with an example.
+- **`--discuss` flag**: Still works for backward compatibility, but only applies when using the `fast` command. For new usage, prefer `build` or `brainstorm` commands.
+
+### Deprecated
+- The `--discuss` flag and `discussion.enabled` config are now legacy. They still work but the brainstorm-based commands (`build`, `fix`, `brainstorm`) are the recommended workflow.
+
 ## 1.2.1 - 2026-03-16
 
 ### Fixed

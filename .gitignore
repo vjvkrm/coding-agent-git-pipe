@@ -4,3 +4,4 @@ dist/
 .agentpipe.lock
 *.tsbuildinfo
 pending.md
+LOCAL_*.md

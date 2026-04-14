@@ -1,6 +1,6 @@
 import React from "react";
 import { parseContractOutput } from "./parser";
-import { AgentName, HumanInputPayload, StepPromptScope, UiMode } from "./types";
+import { AgentName, HumanInputPayload, StepPromptScope, TaskMode, UiMode } from "./types";
 import * as ui from "./ui";
 import InputOnly from "./ink/InputOnly";
 import { InkInstance, loadInkRuntime, shouldUseInkDebugMode } from "./ink/runtime";
@@ -15,6 +15,7 @@ export interface RunBannerParams {
   maxHops: number;
   timeoutMs: number;
   discussionEnabled: boolean;
+  taskMode?: TaskMode;
   reviewGate: boolean;
   logPath: string;
   lockPath: string;
