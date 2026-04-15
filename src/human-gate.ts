@@ -10,7 +10,8 @@ function askLine(promptText: string): Promise<string> {
 
     rl.question(promptText, (answer) => {
       rl.close();
-      resolve(answer.trim());
+      // Collapse pasted newlines into spaces
+      resolve(answer.replace(/[\r\n]+/g, " ").trim());
     });
   });
 }

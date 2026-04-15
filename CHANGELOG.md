@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.3.1 - 2026-04-15
+
+### Fixed
+- **Multi-line paste auto-submits**: Pasting text containing newlines into the REPL or human gate input no longer auto-submits each line. Newlines are now collapsed into spaces before processing. Affects both Ink TUI input (`SingleLineTextBox` via `InputOnly`) and the plain readline-based human gate.
+- **Ctrl+C in REPL during a running task**: Pressing Ctrl+C while a task is running now cancels the run and returns to the REPL prompt instead of exiting the entire process. At the prompt itself, Ctrl+C clears the line and re-prompts.
+
 ## 1.3.0 - 2026-04-14
 
 ### Added

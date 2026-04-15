@@ -306,21 +306,36 @@ async function promptReplCommand(noticeText: string | null): Promise<string | nu
 
     rl.once("close", () => resolve(null));
     rl.once("SIGINT", () => {
+      // Ctrl+C at prompt: print newline and return empty to re-prompt
+      process.stdout.write("\n");
+      rl.removeAllListeners();
       rl.close();
-      resolve(null);
+      resolve("");
     });
 
     rl.question("> ", (answer) => {
+      // Collapse newlines from pasted text into spaces
+      const collapsed = answer.replace(/[\r\n]+/g, " ").trim();
       rl.removeAllListeners();
       rl.close();
-      resolve(answer);
+      resolve(collapsed);
     });
   });
 }
 
+let activeRunAbortController: AbortController | null = null;
+
 async function runRepl(): Promise<void> {
   console.log(replBannerText(pkg.version || "0.0.0"));
   let noticeText: string | null = null;
+
+  // Handle Ctrl+C during a running task: cancel the run, return to prompt
+  const replSigintHandler = (): void => {
+    if (activeRunAbortController) {
+      activeRunAbortController.abort();
+      process.stdout.write("\n");
+    }
+  };
 
   while (true) {
     const input = await promptReplCommand(noticeText);
@@ -378,10 +393,20 @@ async function runRepl(): Promise<void> {
 
     noticeText = null;
 
+    activeRunAbortController = new AbortController();
+    process.on("SIGINT", replSigintHandler);
     try {
       await runParsedTask(parsed, task, replMode);
     } catch (error) {
-      console.error(`Error: ${(error as Error).message}`);
+      const msg = (error as Error).message;
+      if (!activeRunAbortController.signal.aborted) {
+        console.error(`Error: ${msg}`);
+      } else {
+        console.log("[agent-pipe] run cancelled");
+      }
+    } finally {
+      process.off("SIGINT", replSigintHandler);
+      activeRunAbortController = null;
     }
 
     console.log("");
